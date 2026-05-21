@@ -1,0 +1,10 @@
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :user_role do
+    association :user
+    association :organization
+    association :role
+    permissions { [] }
+  end
+end

@@ -1,0 +1,43 @@
+# frozen_string_literal: true
+
+FactoryBot.define do
+  factory :<%= name.underscore %> do
+<% columns.each do |col| -%>
+<% if col[:type] == "references" && col[:foreign_model] -%>
+    association :<%= col[:name].sub(/_id\z/, "") %>
+<% elsif col[:name] =~ /\Aname\z|\Afull_name\z/ -%>
+    <%= col[:name] %> { Faker::Name.name }
+<% elsif col[:name] == "email" -%>
+    email { Faker::Internet.email }
+<% elsif col[:name] == "title" -%>
+    title { Faker::Lorem.sentence(word_count: 3) }
+<% elsif col[:name] =~ /\Adescription\z|\Acontent\z|\Abody\z/ -%>
+    <%= col[:name] %> { Faker::Lorem.paragraph }
+<% elsif col[:name] == "slug" -%>
+    slug { Faker::Internet.slug }
+<% elsif col[:name] =~ /\Ais_/ -%>
+    <%= col[:name] %> { [true, false].sample }
+<% elsif col[:type] == "string" -%>
+    <%= col[:name] %> { Faker::Lorem.sentence(word_count: 3) }
+<% elsif col[:type] == "text" -%>
+    <%= col[:name] %> { Faker::Lorem.paragraph }
+<% elsif col[:type] =~ /\Ainteger\z|\Abigint\z/ -%>
+    <%= col[:name] %> { Faker::Number.between(from: 1, to: 100) }
+<% elsif col[:type] == "boolean" -%>
+    <%= col[:name] %> { [true, false].sample }
+<% elsif col[:type] == "date" -%>
+    <%= col[:name] %> { Faker::Date.between(from: 1.year.ago, to: Date.today) }
+<% elsif col[:type] == "datetime" -%>
+    <%= col[:name] %> { Faker::Time.between(from: 1.year.ago, to: Time.current) }
+<% elsif col[:type] =~ /\Adecimal\z|\Afloat\z/ -%>
+    <%= col[:name] %> { Faker::Number.decimal(l_digits: 3, r_digits: 2) }
+<% elsif col[:type] == "json" -%>
+    <%= col[:name] %> { {} }
+<% elsif col[:type] == "uuid" -%>
+    <%= col[:name] %> { SecureRandom.uuid }
+<% else -%>
+    <%= col[:name] %> { Faker::Lorem.word }
+<% end -%>
+<% end -%>
+  end
+end

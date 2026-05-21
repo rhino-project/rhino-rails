@@ -1,0 +1,19 @@
+# frozen_string_literal: true
+
+# Seed roles for multi-tenant setup
+<% roles.each do |role| -%>
+<% role_name = role.capitalize -%>
+<% description = case role
+   when "admin" then "Administrator role with full access"
+   when "editor" then "Editor role with create, read, and update access"
+   when "viewer" then "Viewer role with read-only access"
+   when "writer" then "Writer role with create and edit access"
+   else "#{role_name} role"
+   end -%>
+Role.find_or_create_by!(slug: "<%= role %>") do |r|
+  r.name = "<%= role_name %>"
+  r.description = "<%= description %>"
+end
+<% end -%>
+
+puts "Roles seeded: <%= roles.join(', ') %>"

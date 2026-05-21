@@ -1,0 +1,31 @@
+# frozen_string_literal: true
+
+module Scopes
+  class <%= name %>Scope < Rhino::ResourceScope
+    # Custom query scope for <%= name %>.
+    # Applied automatically to all <%= name %> queries via HasAutoScope.
+    #
+    # Available methods:
+    #   - user          — the current authenticated user (or nil)
+    #   - organization  — the current organization (or nil)
+    #   - role          — the user's role slug in the current org (or nil)
+    #
+    # @param relation [ActiveRecord::Relation] the current query scope
+    # @return [ActiveRecord::Relation] the modified scope
+    def apply(relation)
+      # Uncomment and customize your filter logic:
+      #
+      # Example: role-based filtering
+      # if role == "viewer"
+      #   relation = relation.where(status: "active")
+      # end
+      #
+      # Example: user-scoped records
+      # if user
+      #   relation = relation.where(user_id: user.id)
+      # end
+
+      relation
+    end
+  end
+end

@@ -1,0 +1,52 @@
+# frozen_string_literal: true
+
+class <%= name %>Policy < Rhino::ResourcePolicy
+  # Override any method for custom authorization logic.
+  # Call super to compose with the default permission check.
+  #
+  # Example:
+  #   def update?(user, record)
+  #     super && record.user_id == user.id
+  #   end
+
+  # def index?
+  #   super
+  # end
+
+  # def show?
+  #   super
+  # end
+
+  # def create?
+  #   super
+  # end
+
+  # def update?
+  #   super
+  # end
+
+  # def destroy?
+  #   super
+  # end
+
+  # ---------------------------------------------------------------
+  # Attribute Permissions
+  # ---------------------------------------------------------------
+  # Override to control which fields each role can read/write.
+  #
+  # def permitted_attributes_for_show(user)
+  #   has_role?(user, 'admin') ? ['*'] : ['id', 'title']
+  # end
+  #
+  # def hidden_attributes_for_show(user)
+  #   has_role?(user, 'admin') ? [] : ['internal_notes']
+  # end
+  #
+  # def permitted_attributes_for_create(user)
+  #   has_role?(user, 'admin') ? ['*'] : ['title', 'content']
+  # end
+  #
+  # def permitted_attributes_for_update(user)
+  #   has_role?(user, 'admin') ? ['*'] : ['title', 'content']
+  # end
+end

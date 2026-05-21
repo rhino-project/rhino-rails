@@ -1,0 +1,55 @@
+# frozen_string_literal: true
+
+class <%= name %> < Rhino::RhinoModel
+<% if belongs_to_org -%>
+  include Rhino::BelongsToOrganization
+<% end -%>
+<% if soft_deletes -%>
+  include Discard::Model
+<% end -%>
+<% if audit_trail -%>
+  include Rhino::HasAuditTrail
+<% end -%>
+
+  # ---------------------------------------------------------------
+  # Query Builder configuration
+  # ---------------------------------------------------------------
+
+<% unless filter_cols.empty? -%>
+  rhino_filters <%= filter_cols.map { |c| ":#{c}" }.join(", ") %>
+<% end -%>
+<% unless sort_cols.empty? -%>
+  rhino_sorts <%= sort_cols.map { |c| ":#{c}" }.join(", ") %>
+<% end -%>
+<% unless field_cols.empty? -%>
+  rhino_fields <%= field_cols.map { |c| ":#{c}" }.join(", ") %>
+<% end -%>
+<% unless include_cols.empty? -%>
+  rhino_includes <%= include_cols.map { |c| ":#{c}" }.join(", ") %>
+<% end -%>
+
+  # ---------------------------------------------------------------
+  # Validation (ActiveModel — use allow_nil: true for all validators)
+  # ---------------------------------------------------------------
+
+<% validation_rules.each do |field, validations| -%>
+<% next if validations.empty? -%>
+  validates :<%= field %>, <%= validations.join(", ") %>, allow_nil: true
+<% end -%>
+
+  # ---------------------------------------------------------------
+  # Field permissions are controlled by the policy.
+  # See: app/policies/<%= name.underscore %>_policy.rb
+  # ---------------------------------------------------------------
+
+  # ---------------------------------------------------------------
+  # Relationships
+  # (Organization scoping is auto-detected from belongs_to associations)
+  # ---------------------------------------------------------------
+
+<% columns.select { |c| c[:type] == "references" && c[:foreign_model] }.each do |col| -%>
+<% relation_name = col[:name].sub(/_id\z/, "") -%>
+<% next if belongs_to_org && col[:foreign_model] == "Organization" -%>
+  belongs_to :<%= relation_name %>, class_name: "<%= col[:foreign_model] %>"
+<% end -%>
+end
