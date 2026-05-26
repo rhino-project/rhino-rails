@@ -25,7 +25,7 @@ jobs:
   release:
     needs: tests
     runs-on: ubuntu-latest
-    name: Create release and publish
+    name: Publish gem, then tag and release
     permissions:
       contents: write
       id-token: write
@@ -36,9 +36,47 @@ jobs:
       - name: Extract version from branch name
         id: version
         run: |
-          VERSION="${GITHUB_REF_NAME#release/}"
-          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing version: $VERSION"
+          TAG="${GITHUB_REF_NAME#release/}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "number=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (gem version ${TAG#v})"
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Verify gemspec version matches release branch
+        run: |
+          GEM_VERSION="$(ruby -e 'require_relative "lib/rhino/version"; puts Rhino::VERSION')"
+          if [ "$GEM_VERSION" != "${{ steps.version.outputs.number }}" ]; then
+            echo "::error::gemspec version ($GEM_VERSION) does not match release branch version (${{ steps.version.outputs.number }})"
+            exit 1
+          fi
+
+      - name: Configure RubyGems trusted publishing
+        uses: rubygems/configure-rubygems-credentials@v2.0.0
+
+      - name: Build and publish gem
+        run: |
+          gem build rhino-rails.gemspec
+          gem push "rhino-rails-${{ steps.version.outputs.number }}.gem"
+
+      - name: Verify gem is live on RubyGems
+        run: |
+          TARGET="${{ steps.version.outputs.number }}"
+          for i in $(seq 1 12); do
+            LATEST="$(gem list --remote --exact rhino-rails | sed -nE 's/.*\(([^),]+).*/\1/p')"
+            if [ "$LATEST" = "$TARGET" ]; then
+              echo "Confirmed rhino-rails $TARGET is live on RubyGems"
+              exit 0
+            fi
+            echo "RubyGems latest is '$LATEST', waiting for '$TARGET' ($i/12)..."
+            sleep 10
+          done
+          echo "::error::RubyGems did not reflect $TARGET after publishing"
+          exit 1
 
       - name: Create tag
         run: |
@@ -53,12 +91,3 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
           generate_release_notes: true
-
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: '3.4'
-          bundler-cache: true
-
-      - name: Publish to RubyGems
-        uses: rubygems/release-gem@v1
