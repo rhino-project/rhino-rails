@@ -170,14 +170,21 @@ RSpec.describe Rhino::Commands::InstallCommand do
   # ------------------------------------------------------------------
 
   describe "#create_policies" do
-    it "creates OrganizationPolicy and RolePolicy" do
+    it "creates OrganizationPolicy, RolePolicy, and UserPolicy" do
       command.send(:create_policies)
 
-      %w[organization_policy role_policy].each do |policy|
+      %w[organization_policy role_policy user_policy].each do |policy|
         path = File.join(tmp_dir, "app/policies/#{policy}.rb")
         expect(File.exist?(path)).to be true
         expect(File.read(path)).not_to be_empty
       end
+    end
+
+    it "UserPolicy inherits from Rhino::ResourcePolicy so include-auth on " \
+       "User-typed relations resolves to the 'users.*' permission family" do
+      command.send(:create_policies)
+      content = File.read(File.join(tmp_dir, "app/policies/user_policy.rb"))
+      expect(content).to include("class UserPolicy < Rhino::ResourcePolicy")
     end
   end
 

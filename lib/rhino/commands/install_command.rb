@@ -155,7 +155,7 @@ module Rhino
 
         templates_dir = File.expand_path("../../templates/multi_tenant/policies", __FILE__)
 
-        %w[organization_policy role_policy].each do |policy|
+        %w[organization_policy role_policy user_policy].each do |policy|
           template = File.join(templates_dir, "#{policy}.rb.erb")
           next unless File.exist?(template)
 
