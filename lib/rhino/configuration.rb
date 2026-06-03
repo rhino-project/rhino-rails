@@ -33,9 +33,20 @@ module Rhino
 
     # Register a route group with its configuration
     # Usage: config.route_group :tenant, prefix: ':organization', middleware: [Rhino::Middleware::ResolveOrganizationFromRoute], models: :all
-    def route_group(name, prefix: "", middleware: [], models: :all)
+    #
+    # The optional `domain:` keyword constrains the group's routes to a specific
+    # host. Two groups can then share the same `prefix:` but live on different
+    # domains. A parameterized domain such as "{organization}.example.com"
+    # captures the subdomain and feeds organization resolution exactly like the
+    # path-prefix ":organization" does. Groups without a domain (nil/blank)
+    # match any host (default, fully backward compatible).
+    def route_group(name, prefix: "", domain: nil, middleware: [], models: :all)
+      normalized_domain = domain.to_s.strip
+      normalized_domain = nil if normalized_domain.empty?
+
       @route_groups[name.to_sym] = {
         prefix: prefix.to_s,
+        domain: normalized_domain,
         middleware: Array(middleware),
         models: models
       }

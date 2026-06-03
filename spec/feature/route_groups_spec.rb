@@ -65,6 +65,76 @@ RSpec.describe "RouteGroups" do
   end
 
   # ------------------------------------------------------------------
+  # Domain configuration
+  # ------------------------------------------------------------------
+
+  describe "domain configuration" do
+    it "defaults domain to nil when not provided (backward compatible)" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :default, prefix: "", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:default][:domain]).to be_nil
+    end
+
+    it "stores a literal domain" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :admin, prefix: "admin", domain: "admin.example.com", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:admin][:domain]).to eq("admin.example.com")
+    end
+
+    it "stores a parameterized domain" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :tenant, prefix: "", domain: "{organization}.example.com", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:tenant][:domain]).to eq("{organization}.example.com")
+    end
+
+    it "normalizes a blank/empty-string domain to nil" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :a, prefix: "a", domain: "", models: :all
+        c.route_group :b, prefix: "b", domain: "   ", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:a][:domain]).to be_nil
+      expect(Rhino.config.route_groups[:b][:domain]).to be_nil
+    end
+
+    it "trims surrounding whitespace from a domain" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :admin, prefix: "admin", domain: "  admin.example.com  ", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:admin][:domain]).to eq("admin.example.com")
+    end
+
+    it "allows domain and prefix to be configured independently and together" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :admin, prefix: "admin", domain: "admin.example.com", models: :all
+      end
+
+      group = Rhino.config.route_groups[:admin]
+      expect(group[:prefix]).to eq("admin")
+      expect(group[:domain]).to eq("admin.example.com")
+    end
+  end
+
+  # ------------------------------------------------------------------
   # Tenant group detection
   # ------------------------------------------------------------------
 

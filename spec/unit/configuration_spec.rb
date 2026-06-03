@@ -33,6 +33,7 @@ RSpec.describe Rhino::Configuration do
       config.route_group :tenant, prefix: ":organization", middleware: ["SomeMiddleware"], models: :all
       expect(config.route_groups[:tenant]).to eq({
         prefix: ":organization",
+        domain: nil,
         middleware: ["SomeMiddleware"],
         models: :all
       })
@@ -42,6 +43,7 @@ RSpec.describe Rhino::Configuration do
       config.route_group :default
       expect(config.route_groups[:default]).to eq({
         prefix: "",
+        domain: nil,
         middleware: [],
         models: :all
       })

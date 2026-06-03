@@ -3,6 +3,8 @@
 require "rhino/version"
 require "rhino/configuration"
 require "rhino/resource_scope"
+require "rhino/routing/domain_constraint"
+require "rhino/routing/route_group_validator"
 require "rhino/middleware/resolve_organization_from_route"
 require "rails"
 require "rhino/engine"

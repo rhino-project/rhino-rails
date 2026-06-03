@@ -37,6 +37,13 @@ Rhino.configure do |config|
   # config.route_group :driver, prefix: 'driver', middleware: [], models: [:trips, :trucks]
   # config.route_group :admin, prefix: 'admin', middleware: [], models: :all
   # config.route_group :public, prefix: 'public', middleware: [], models: [:materials]
+  #
+  # The optional `domain:` keyword constrains a group to a specific host, so two
+  # groups can share a prefix but live on different domains. A parameterized
+  # domain captures the subdomain and feeds organization resolution just like
+  # the path prefix ':organization' does. Groups without a domain match any host.
+  # config.route_group :admin, prefix: '', domain: 'admin.example.com', models: :all
+  # config.route_group :tenant, prefix: '', domain: '{organization}.example.com', models: :all
 
   # config.route_group :default, prefix: '', middleware: [], models: :all
 

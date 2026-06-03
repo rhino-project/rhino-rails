@@ -151,6 +151,7 @@ GEM
       racc (~> 1.4)
     nokogiri (1.19.1-x86_64-linux-gnu)
       racc (~> 1.4)
+    ostruct (0.6.3)
     pagy (9.4.0)
     pastel (0.8.0)
       tty-color (~> 0.5)
@@ -269,6 +270,7 @@ PLATFORMS
 DEPENDENCIES
   combustion (~> 1.4)
   factory_bot_rails (~> 6.4)
+  ostruct
   rhino-rails!
   rspec-rails (~> 7.0)
   simplecov (~> 0.22)

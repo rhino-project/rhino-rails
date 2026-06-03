@@ -7,10 +7,28 @@ module Rhino
     class << self
       def draw(router)
         config = Rhino.config
+
+        # Fail fast on route groups that would silently shadow each other (same
+        # prefix + intersecting host-set + overlapping models). Without a
+        # distinguishing domain, two or more overlapping groups need distinct
+        # prefixes.
+        Rhino::Routing::RouteGroupValidator.validate(config)
+
         route_groups = config.route_groups
 
         # Sort: literal prefixes first, parameterized (containing ':') last
         sorted_groups = route_groups.sort_by { |_name, cfg| cfg[:prefix].include?(":") ? 1 : 0 }
+
+        # Build a domain constraint for a group, or nil when the group has no
+        # domain (matches any host — the default, backward-compatible behavior).
+        domain_constraint = lambda do |group_config|
+          domain = group_config && group_config[:domain]
+          return nil if domain.nil? || domain.to_s.empty?
+
+          Rhino::Routing::DomainConstraint.new(domain)
+        end
+
+        tenant_constraint = config.has_tenant_group? ? domain_constraint.call(route_groups[:tenant]) : nil
 
         router.instance_eval do
           scope path: "api", defaults: { format: :json } do
@@ -40,19 +58,30 @@ module Rhino
               # Invitation routes under tenant prefix
               invitation_prefix = tenant_prefix.present? ? "#{tenant_prefix}/invitations" : "invitations"
 
-              scope path: invitation_prefix do
-                get "/", to: "rhino/invitations#index"
-                post "/", to: "rhino/invitations#create"
-                post ":id/resend", to: "rhino/invitations#resend"
-                delete ":id", to: "rhino/invitations#cancel"
-              end
-
               # Nested operations under tenant prefix
               nested_config = config.nested
               nested_path = nested_config[:path] || "nested"
               nested_prefix = tenant_prefix.present? ? "#{tenant_prefix}/#{nested_path}" : nested_path
 
-              post nested_prefix, to: "rhino/resources#nested", as: :rhino_nested
+              # Tenant invitation + nested routes inherit the tenant group's
+              # domain (matches Laravel, which constrains these to the tenant
+              # domain). When there is no tenant domain they match any host.
+              draw_tenant_routes = lambda do
+                scope path: invitation_prefix do
+                  get "/", to: "rhino/invitations#index"
+                  post "/", to: "rhino/invitations#create"
+                  post ":id/resend", to: "rhino/invitations#resend"
+                  delete ":id", to: "rhino/invitations#cancel"
+                end
+
+                post nested_prefix, to: "rhino/resources#nested", as: :rhino_nested
+              end
+
+              if tenant_constraint
+                constraints(tenant_constraint) { instance_exec(&draw_tenant_routes) }
+              else
+                instance_exec(&draw_tenant_routes)
+              end
             else
               # No tenant group — register nested at top level
               nested_config = config.nested
@@ -66,6 +95,7 @@ module Rhino
             sorted_groups.each do |group_name, group_config|
               group_prefix = group_config[:prefix]
               group_models = config.models_for_group(group_name)
+              group_constraint = domain_constraint.call(group_config)
 
               group_models.each do |slug|
                 model_class_name = config.models[slug]
@@ -79,6 +109,10 @@ module Rhino
 
                 route_prefix = [group_prefix, slug.to_s].reject(&:blank?).join("/")
 
+                # Each model's CRUD routes live inside a path scope. When the
+                # group declares a domain, that scope is additionally wrapped in
+                # a host constraint so the routes only match on that domain.
+                draw_model_routes = lambda do
                 scope path: route_prefix, defaults: { model_slug: slug.to_s, route_group: group_name.to_s } do
                   unless except_actions.include?("index")
                     get "/", to: "rhino/resources#index", as: "rhino_#{group_name}_#{slug}_index"
@@ -113,6 +147,13 @@ module Rhino
                   unless except_actions.include?("destroy")
                     delete ":id", to: "rhino/resources#destroy", as: "rhino_#{group_name}_#{slug}_destroy"
                   end
+                end
+                end
+
+                if group_constraint
+                  constraints(group_constraint) { instance_exec(&draw_model_routes) }
+                else
+                  instance_exec(&draw_model_routes)
                 end
               end
             end

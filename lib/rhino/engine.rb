@@ -27,8 +27,9 @@ module Rhino
       require "rhino/policies/resource_policy"
       require "rhino/policies/invitation_policy"
 
-      # Query builder and routes
+      # Query builder, routing constraints and routes
       require "rhino/query_builder"
+      require "rhino/routing/domain_constraint"
       require "rhino/routes"
 
       # Controllers
