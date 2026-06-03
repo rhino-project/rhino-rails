@@ -20,8 +20,10 @@ module Rhino
     @@organization_path_cache = {}
 
     before_action :set_model_class
+    before_action :set_route_group
     before_action :resolve_organization
     before_action :authenticate_user!, unless: :public_route_group?
+    before_action :enforce_group_membership, unless: :public_route_group?
 
     # GET /api/{slug}
     def index
@@ -277,6 +279,29 @@ module Rhino
 
     def current_route_group
       params[:route_group]
+    end
+
+    # Expose the resolved route_group to policies/permissions via RequestStore
+    # so group-aware permission resolution (when enforcement is on) can use it.
+    def set_route_group
+      return unless defined?(RequestStore)
+
+      RequestStore.store[:rhino_route_group] = params[:route_group].presence
+    end
+
+    # Coarse group-membership gate (GROUP_AUTH_DESIGN.md §6). Entirely gated by
+    # the enforce_group_membership flag; off = unchanged. Runs after auth, so an
+    # authenticated user without a matching membership row gets 403.
+    def enforce_group_membership
+      return unless Rhino.config.respond_to?(:enforce_group_membership?)
+      return unless Rhino.config.enforce_group_membership?
+
+      user = current_user
+      return unless user # unauthenticated already handled by authenticate_user!
+
+      unless Rhino::GroupMembership.member?(user, current_route_group, current_organization)
+        render json: { message: "You are not a member of this group" }, status: :forbidden
+      end
     end
 
     def authenticate_user!

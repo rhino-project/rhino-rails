@@ -168,7 +168,11 @@ module Rhino
 
       if user.respond_to?(:has_permission?)
         organization = current_organization
-        user.has_permission?(permission, organization)
+        if accepts_route_group_kwarg?(user)
+          user.has_permission?(permission, organization, route_group: current_route_group)
+        else
+          user.has_permission?(permission, organization)
+        end
       else
         # Fallback: if the user model doesn't implement has_permission?, allow
         true
@@ -191,6 +195,37 @@ module Rhino
     def current_organization
       if defined?(RequestStore)
         RequestStore.store[:rhino_organization]
+      end
+    end
+
+    def current_route_group
+      if defined?(RequestStore)
+        RequestStore.store[:rhino_route_group]
+      end
+    end
+
+    # Only pass the route_group kwarg to user models whose has_permission?
+    # actually accepts it (host apps may have an older signature). The reflection
+    # is a property of the method's owner (the class/module defining it), not the
+    # instance, so memoize per-owner to avoid reflecting on every permission
+    # check.
+    def accepts_route_group_kwarg?(user)
+      method = user.method(:has_permission?)
+      cache = self.class.send(:route_group_kwarg_cache)
+      owner = method.owner
+      return cache[owner] if cache.key?(owner)
+
+      cache[owner] = method.parameters.any? do |type, name|
+        (type == :key || type == :keyreq) && name == :route_group
+      end
+    rescue NameError
+      false
+    end
+
+    class << self
+      # Per-owner memo of whether has_permission? accepts a :route_group kwarg.
+      def route_group_kwarg_cache
+        @route_group_kwarg_cache ||= {}
       end
     end
   end

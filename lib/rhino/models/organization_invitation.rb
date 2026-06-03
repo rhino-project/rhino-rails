@@ -4,7 +4,9 @@ module Rhino
   class OrganizationInvitation < ActiveRecord::Base
     self.table_name = "organization_invitations"
 
-    belongs_to :organization
+    # organization is optional: non-tenant group invites (e.g. :admin/:driver)
+    # have no organization (GROUP_AUTH_DESIGN.md §8).
+    belongs_to :organization, optional: true
     belongs_to :role, optional: true
     belongs_to :inviter, class_name: "User", foreign_key: "invited_by", optional: true
 
@@ -33,13 +35,22 @@ module Rhino
         accepted_at: Time.current
       )
 
-      # Add user to organization via pivot table
+      # Add user to the group (and organization, for tenant groups) via the
+      # user_roles pivot. The membership carries the invitation's route_group
+      # so group-membership enforcement (GROUP_AUTH_DESIGN.md §6/§8) can match.
       if defined?(UserRole)
-        UserRole.find_or_create_by!(
+        attrs = {
           user_id: user.id,
           organization_id: organization_id,
           role_id: role_id
-        )
+        }
+
+        invite_group = respond_to?(:route_group) ? route_group : nil
+        if invite_group.present? && UserRole.column_names.include?("route_group")
+          attrs[:route_group] = invite_group
+        end
+
+        UserRole.find_or_create_by!(attrs)
       end
     end
 

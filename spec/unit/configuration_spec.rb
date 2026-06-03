@@ -35,7 +35,9 @@ RSpec.describe Rhino::Configuration do
         prefix: ":organization",
         domain: nil,
         middleware: ["SomeMiddleware"],
-        models: :all
+        models: :all,
+        auth: false,
+        hooks: nil
       })
     end
 
@@ -45,7 +47,9 @@ RSpec.describe Rhino::Configuration do
         prefix: "",
         domain: nil,
         middleware: [],
-        models: :all
+        models: :all,
+        auth: false,
+        hooks: nil
       })
     end
 

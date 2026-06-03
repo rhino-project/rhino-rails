@@ -30,6 +30,12 @@ module Rhino
         return render json: { message: "Invalid credentials" }, status: :unauthorized
       end
 
+      # Group membership is a coarse access gate (GROUP_AUTH_DESIGN.md §6).
+      # Gated entirely by the enforce_group_membership flag; off = unchanged.
+      if membership_enforced? && !group_member?(user)
+        return render json: { message: "You are not a member of this group" }, status: :forbidden
+      end
+
       token = generate_api_token(user)
 
       # Get the first organization the user belongs to
@@ -38,6 +44,10 @@ module Rhino
         first_org = user.organizations.first
         organization_slug = first_org&.slug
       end
+
+      # Lifecycle hook (GROUP_AUTH_DESIGN.md §7). A reject revokes the token.
+      hook_response = run_hook(:after_login, user, token: token, revoke_on_reject: true)
+      return if hook_response
 
       render json: {
         token: token,
@@ -54,6 +64,10 @@ module Rhino
       elsif user.respond_to?(:update_column) && user.class.column_names.include?("api_token")
         user.update_column(:api_token, SecureRandom.hex(32))
       end
+
+      # Token is already gone; a rejecting hook only changes the status code.
+      hook_response = run_hook(:after_logout, user, revoke_on_reject: false)
+      return if hook_response
 
       render json: { message: "Logged out successfully" }, status: :ok
     end
@@ -83,9 +97,18 @@ module Rhino
         # Send email via mailer if available
         mailer_class = "Rhino::PasswordRecoveryMailer".safe_constantize
         mailer_class&.recover(user, token)&.deliver_later
+
+        # Lifecycle hook fires only when a user actually exists, and its
+        # rejection is SWALLOWED here. recover_password must be an enumeration
+        # oracle-free endpoint: a rejecting hook would otherwise return a 403
+        # only for existing emails, letting a caller distinguish real accounts
+        # from fake ones. The hook still runs for its side effects (e.g.
+        # auditing, throttling), but its reject never changes the response.
+        run_hook(:after_password_recover, user, revoke_on_reject: false, swallow_reject: true)
       end
 
-      # Always return success to prevent email enumeration
+      # Always return the same response (existing OR non-existing email) to
+      # prevent email enumeration — this is the documented contract.
       render json: { message: "Password recovery email sent." }, status: :ok
     end
 
@@ -131,6 +154,9 @@ module Rhino
       user.reset_password_token = nil
       user.reset_password_sent_at = nil
       user.save!
+
+      hook_response = run_hook(:after_password_reset, user, revoke_on_reject: false)
+      return if hook_response
 
       render json: { message: "Password has been reset." }, status: :ok
     end
@@ -184,7 +210,7 @@ module Rhino
         password: params[:password]
       )
 
-      # Accept invitation (adds user to organization)
+      # Accept invitation (adds user to organization, carrying its route_group)
       invitation.accept!(user)
 
       # Generate token
@@ -193,6 +219,15 @@ module Rhino
       # Get organization slug for redirect
       organization = invitation.organization
       organization_slug = organization&.slug
+
+      # Lifecycle hook for the group the invitee joined (from the invitation).
+      invite_group = invitation.respond_to?(:route_group) ? invitation.route_group : nil
+      hook_response = run_hook(
+        :after_register, user,
+        token: token, revoke_on_reject: true,
+        group_override: invite_group, organization_override: organization
+      )
+      return if hook_response
 
       render json: {
         message: "Registration successful",
@@ -203,6 +238,87 @@ module Rhino
     end
 
     private
+
+    # ------------------------------------------------------------------
+    # Group-aware auth (GROUP_AUTH_DESIGN.md §5/§6/§7)
+    # ------------------------------------------------------------------
+
+    # The route_group resolved from the matched route's defaults. nil for the
+    # legacy unprefixed auth routes with no :default group.
+    def current_route_group
+      params[:route_group].presence
+    end
+
+    # Resolve the organization for group-aware auth (tenant groups carry the
+    # :organization prefix param). Returns nil for non-tenant/legacy routes.
+    def current_organization
+      return @current_organization if defined?(@current_organization)
+
+      @current_organization = begin
+        org_identifier = params[:organization]
+        if org_identifier.present?
+          org_class = "Organization".safe_constantize
+          if org_class
+            column = Rhino.config.multi_tenant[:organization_identifier_column] || "id"
+            org_class.find_by(column => org_identifier)
+          end
+        end
+      end
+    end
+
+    def membership_enforced?
+      Rhino.config.respond_to?(:enforce_group_membership?) && Rhino.config.enforce_group_membership?
+    end
+
+    # Coarse membership gate for the resolved group (and org for tenant groups).
+    def group_member?(user)
+      Rhino::GroupMembership.member?(user, current_route_group, current_organization)
+    end
+
+    # Run the configured lifecycle hook for the current (or overridden) group.
+    # Returns true when a response was rendered (rejection), false/nil otherwise.
+    #
+    # On Rhino::AuthRejected: for token-issuing actions (revoke_on_reject) the
+    # just-issued token is revoked, then the carried status is returned.
+    #
+    # When swallow_reject is true (password/recover only), a rejection is run
+    # for its side effects but NOT surfaced: the action proceeds to its uniform
+    # response so the endpoint cannot be used as an email-enumeration oracle.
+    def run_hook(event, user, token: nil, revoke_on_reject: false, swallow_reject: false, group_override: :__none__, organization_override: :__none__)
+      group = group_override == :__none__ ? current_route_group : group_override
+      org = organization_override == :__none__ ? current_organization : organization_override
+
+      hooks = Rhino.config.respond_to?(:hooks_for_group) ? Rhino.config.hooks_for_group(group) : nil
+      return false unless hooks
+      return false unless hooks.respond_to?(event)
+
+      context = {
+        user: user,
+        route_group: group,
+        organization: org,
+        token: token,
+        request: request
+      }
+
+      hooks.public_send(event, user, context)
+      false
+    rescue Rhino::AuthRejected => e
+      return false if swallow_reject
+
+      revoke_token(user) if revoke_on_reject
+      render json: { message: e.message }, status: e.status
+      true
+    end
+
+    def revoke_token(user)
+      return unless user
+
+      if user.respond_to?(:regenerate_api_token)
+        user.regenerate_api_token
+      elsif user.respond_to?(:update_column) && user.class.column_names.include?("api_token")
+        user.update_column(:api_token, SecureRandom.hex(32))
+      end
+    end
 
     def authenticate_user!
       unless current_user

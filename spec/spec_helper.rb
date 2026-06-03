@@ -28,6 +28,9 @@ ActiveRecord::Base.establish_connection(
 # Require the gem
 require "rhino"
 require "rhino/configuration"
+require "rhino/auth_rejected"
+require "rhino/auth_hooks"
+require "rhino/group_membership"
 require "rhino/query_builder"
 require "rhino/concerns/has_rhino"
 require "rhino/concerns/has_validation"
@@ -80,11 +83,18 @@ ActiveRecord::Schema.define do
 
   create_table :user_roles, force: true do |t|
     t.references :user, null: false, foreign_key: true
-    t.references :organization, null: false, foreign_key: true
+    t.references :organization, null: true, foreign_key: true
     t.references :role, null: false, foreign_key: true
+    t.string :route_group
     t.json :permissions, default: []
     t.timestamps
   end
+  # DB-portable expression index: COALESCE collapses NULL org/group so two
+  # identical wildcard memberships (NULL org AND NULL group) cannot coexist.
+  # Mirrors the migration templates.
+  add_index :user_roles,
+            "user_id, COALESCE(organization_id, 0), role_id, COALESCE(route_group, '')",
+            unique: true, name: "index_user_roles_on_user_org_role_group"
 
   create_table :posts, force: true do |t|
     t.references :organization, foreign_key: true
@@ -128,10 +138,11 @@ ActiveRecord::Schema.define do
   add_index :audit_logs, [:auditable_type, :auditable_id]
 
   create_table :organization_invitations, force: true do |t|
-    t.references :organization, null: false, foreign_key: true
+    t.references :organization, null: true, foreign_key: true
     t.string :email, null: false
     t.references :role, foreign_key: true
     t.bigint :invited_by
+    t.string :route_group
     t.string :token, null: false
     t.string :status, default: "pending"
     t.datetime :expires_at
@@ -160,7 +171,7 @@ end
 
 class UserRole < ActiveRecord::Base
   belongs_to :user
-  belongs_to :organization
+  belongs_to :organization, optional: true
   belongs_to :role
 end
 
@@ -276,6 +287,7 @@ RSpec.configure do |config|
     if defined?(RequestStore)
       RequestStore.store[:rhino_current_user] = nil
       RequestStore.store[:rhino_organization] = nil
+      RequestStore.store[:rhino_route_group] = nil
     end
 
     Rhino.reset_configuration!

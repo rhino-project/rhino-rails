@@ -30,18 +30,76 @@ module Rhino
 
         tenant_constraint = config.has_tenant_group? ? domain_constraint.call(route_groups[:tenant]) : nil
 
+        # Per-group auth route registration (GROUP_AUTH_DESIGN.md §5). For each
+        # group that opted into `auth: true`, register the full auth route set
+        # under the group's prefix/domain, tagging each route with the group's
+        # route_group default so the controller can resolve the group.
+        auth_groups = config.auth_enabled_groups
+
+        # The legacy unprefixed /api/auth/* set always remains and maps to the
+        # ':default' group when one is configured (otherwise no group → nil).
+        legacy_auth_group = route_groups.key?(:default) ? "default" : nil
+
         router.instance_eval do
           scope path: "api", defaults: { format: :json } do
             # ---------------------------------------------------------------
-            # Auth Routes (always registered)
+            # Per-group auth routes (auth: true groups)
             # ---------------------------------------------------------------
-            scope path: "auth" do
+            # Routing precedence is first-match-wins. A group with an empty
+            # prefix and a domain produces an auth path (e.g. /api/auth/login)
+            # identical to the legacy set. If the legacy (host-unconstrained)
+            # routes were registered first they would shadow the group route on
+            # the group's domain, so route_group would never resolve and the
+            # group's hooks/membership checks would never engage. To avoid that,
+            # all DOMAIN-CONSTRAINED group auth routes are registered BEFORE the
+            # legacy set; the host constraint keeps them inert on other hosts.
+            # Prefixed (non-domain) group routes have a distinct path and may be
+            # registered after the legacy set without conflict.
+            grouped_auth = auth_groups.group_by do |group_name|
+              dc = domain_constraint.call(route_groups[group_name])
+              dc ? :domain : :plain
+            end
+
+            draw_group_auth = lambda do |group_name|
+              group_config = route_groups[group_name]
+              group_prefix = group_config[:prefix].to_s
+              auth_path = [group_prefix, "auth"].reject(&:blank?).join("/")
+              group_auth_constraint = domain_constraint.call(group_config)
+
+              draw_auth_routes = lambda do
+                scope path: auth_path, defaults: { route_group: group_name.to_s } do
+                  post "login", to: "rhino/auth#login", as: "rhino_#{group_name}_auth_login"
+                  post "password/recover", to: "rhino/auth#recover_password", as: "rhino_#{group_name}_auth_recover"
+                  post "password/reset", to: "rhino/auth#reset", as: "rhino_#{group_name}_auth_reset"
+                  post "register", to: "rhino/auth#register_with_invitation", as: "rhino_#{group_name}_auth_register"
+                  post "logout", to: "rhino/auth#logout", as: "rhino_#{group_name}_auth_logout"
+                end
+              end
+
+              if group_auth_constraint
+                constraints(group_auth_constraint) { instance_exec(&draw_auth_routes) }
+              else
+                instance_exec(&draw_auth_routes)
+              end
+            end
+
+            # Domain-constrained group auth routes FIRST (they may collide on
+            # path with the legacy set; the host constraint disambiguates).
+            (grouped_auth[:domain] || []).each { |group_name| instance_exec(group_name, &draw_group_auth) }
+
+            # ---------------------------------------------------------------
+            # Auth Routes (legacy, always registered)
+            # ---------------------------------------------------------------
+            scope path: "auth", defaults: { route_group: legacy_auth_group } do
               post "login", to: "rhino/auth#login"
               post "password/recover", to: "rhino/auth#recover_password"
               post "password/reset", to: "rhino/auth#reset"
               post "register", to: "rhino/auth#register_with_invitation"
               post "logout", to: "rhino/auth#logout"
             end
+
+            # Prefixed (non-domain) group auth routes after the legacy set.
+            (grouped_auth[:plain] || []).each { |group_name| instance_exec(group_name, &draw_group_auth) }
 
             # ---------------------------------------------------------------
             # Invitation accept (public, always registered)

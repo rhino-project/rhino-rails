@@ -2,6 +2,9 @@
 
 require "rhino/version"
 require "rhino/configuration"
+require "rhino/auth_rejected"
+require "rhino/auth_hooks"
+require "rhino/group_membership"
 require "rhino/resource_scope"
 require "rhino/routing/domain_constraint"
 require "rhino/routing/route_group_validator"

@@ -53,6 +53,20 @@ module Rhino
 
       email = params[:email].to_s.strip
       role_id = params[:role_id]
+      route_group = params[:route_group].presence
+
+      # The public group is never auth-enabled — it cannot be invited into.
+      if route_group.to_s == "public"
+        return render json: { message: "Cannot invite into the public group" }, status: :unprocessable_entity
+      end
+
+      # When group-membership enforcement is on, the inviter must themselves be
+      # a member of the target group (GROUP_AUTH_DESIGN.md §8).
+      if route_group.present? && membership_enforced?
+        unless Rhino::GroupMembership.member?(current_user, route_group, current_organization)
+          return render json: { message: "You are not a member of this group" }, status: :forbidden
+        end
+      end
 
       # Check if user already exists and is in organization
       user_class = "User".safe_constantize
@@ -75,13 +89,28 @@ module Rhino
         return render json: { message: "A pending invitation already exists for this email" }, status: :unprocessable_entity
       end
 
-      # Create invitation
-      invitation = OrganizationInvitation.create!(
-        organization_id: current_organization.id,
+      # Create invitation. Non-tenant groups (e.g. :admin, :driver) have no
+      # organization, so a non-tenant invite must store organization_id = nil —
+      # matching the nullable membership row that accept! will create. Only the
+      # tenant group (and the legacy no-group invite) carries the current org.
+      invitation_org_id =
+        if route_group.present? && !Rhino.config.group_is_tenant?(route_group)
+          nil
+        else
+          current_organization.id
+        end
+
+      invitation_attrs = {
+        organization_id: invitation_org_id,
         email: email,
         role_id: role_id,
         invited_by: current_user.id
-      )
+      }
+      if route_group.present? && OrganizationInvitation.column_names.include?("route_group")
+        invitation_attrs[:route_group] = route_group
+      end
+
+      invitation = OrganizationInvitation.create!(invitation_attrs)
 
       # Send notification email
       send_invitation_email(invitation)
@@ -219,6 +248,10 @@ module Rhino
 
     def current_organization
       @organization
+    end
+
+    def membership_enforced?
+      Rhino.config.respond_to?(:enforce_group_membership?) && Rhino.config.enforce_group_membership?
     end
 
     def send_invitation_email(invitation)

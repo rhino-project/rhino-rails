@@ -35,8 +35,27 @@ module Rhino
     # @param permission [String] Permission string like 'posts.index'
     # @param organization [Object, nil] Organization to check permissions for
     # @return [Boolean]
-    def has_permission?(permission, organization = nil)
+    def has_permission?(permission, organization = nil, route_group: nil)
       return false if permission.blank?
+
+      # Group-aware permission resolution (GROUP_AUTH_DESIGN.md §6). Only active
+      # when enforce_group_membership is on. Permissions then resolve from the
+      # membership row matching (route_group, organization), not the heuristic.
+      if group_membership_enforced?
+        membership = Rhino::GroupMembership.matching_membership(self, route_group, organization)
+        return false unless membership
+
+        ur_permissions = parse_permissions(membership.respond_to?(:permissions) ? membership.permissions : nil)
+        return matches_permission?(permission, ur_permissions) if ur_permissions.present?
+
+        role = membership.respond_to?(:role) ? membership.role : nil
+        if role
+          role_permissions = parse_permissions(role.respond_to?(:permissions) ? role.permissions : nil)
+          return matches_permission?(permission, role_permissions) if role_permissions.present?
+        end
+
+        return false
+      end
 
       if organization
         # Tenant route group: check permissions for this organization
@@ -112,6 +131,10 @@ module Rhino
       return nil unless organization
 
       user_roles.find_by(organization_id: organization.id)
+    end
+
+    def group_membership_enforced?
+      Rhino.config.respond_to?(:enforce_group_membership?) && Rhino.config.enforce_group_membership?
     end
   end
 end

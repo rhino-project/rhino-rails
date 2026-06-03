@@ -55,6 +55,31 @@ Rhino.configure do |config|
   # }
 
   # ---------------------------------------------------------------
+  # Group-aware auth, membership & lifecycle hooks (opt-in)
+  # ---------------------------------------------------------------
+  # A route group may opt into group-aware auth by passing `auth: true`. The
+  # full auth route set (login, logout, password/recover, password/reset,
+  # register) is then registered under the group's prefix/domain, tagged with
+  # the group's route_group. The legacy unprefixed /api/auth/* set always
+  # remains for the default/no-group case.
+  #
+  # A group may also declare an optional `hooks:` class — a class responding to
+  # after_login / after_logout / after_register / after_password_recover /
+  # after_password_reset (subclass Rhino::AuthHooks for no-op defaults). Each
+  # runs after its action succeeds and may reject by raising
+  # Rhino::AuthRejected.new(message, status: 403); a rejection on a
+  # token-issuing action (login/register) revokes the just-issued token.
+  #
+  # config.route_group :driver, prefix: 'driver', auth: true, hooks: DriverAuthHooks, models: [:trips]
+  #
+  # The master flag (default OFF) turns on group-membership enforcement. When
+  # ON, an authenticated user must have a `user_roles` row matching the
+  # request's route_group (a NULL route_group row is a wildcard matching every
+  # group) and, for tenant groups, the resolved organization — otherwise 403.
+  # Permissions then resolve from that matching membership row.
+  # config.auth = { enforce_group_membership: false }
+
+  # ---------------------------------------------------------------
   # Invitations
   # ---------------------------------------------------------------
   # config.invitations = {
