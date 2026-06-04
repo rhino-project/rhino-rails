@@ -74,6 +74,28 @@ RSpec.describe "Configuration: group-aware auth" do
     end
   end
 
+  describe "#auth_enabled_legacy_groups (§11.1)" do
+    it "returns auth-enabled groups with empty prefix AND no domain" do
+      config.route_group :default, prefix: "", auth: true
+      expect(config.auth_enabled_legacy_groups).to eq([:default])
+    end
+
+    it "excludes groups with a prefix" do
+      config.route_group :driver, prefix: "driver", auth: true
+      expect(config.auth_enabled_legacy_groups).to be_empty
+    end
+
+    it "excludes groups with a domain" do
+      config.route_group :admin, prefix: "", domain: "admin.example.com", auth: true
+      expect(config.auth_enabled_legacy_groups).to be_empty
+    end
+
+    it "excludes auth: false groups" do
+      config.route_group :default, prefix: "", auth: false
+      expect(config.auth_enabled_legacy_groups).to be_empty
+    end
+  end
+
   describe "#hooks_for_group" do
     it "instantiates a configured hooks class" do
       config.route_group :driver, prefix: "driver", auth: true, hooks: CfgDriverHooks

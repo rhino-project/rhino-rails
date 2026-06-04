@@ -183,6 +183,90 @@ RSpec.describe "Group membership enforcement" do
   end
 
   # ==================================================================
+  # §11.2 — membership 403 takes precedence over the org-resolution 404
+  # ==================================================================
+
+  describe "§11.2 — 403 vs 404 precedence (tenant group)" do
+    let!(:org_a) { Organization.create!(name: "A", slug: "a-#{SecureRandom.hex(4)}") }
+    let!(:org_b) { Organization.create!(name: "B", slug: "b-#{SecureRandom.hex(4)}") }
+
+    def configure_tenant(enforce:)
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "MembershipPost"
+        c.route_group :tenant, prefix: ":organization",
+                      middleware: [Rhino::Middleware::ResolveOrganizationFromRoute],
+                      auth: true, models: [:posts]
+        c.multi_tenant = { organization_identifier_column: "slug" }
+        c.auth = { enforce_group_membership: enforce }
+      end
+    end
+
+    context "enforcement ON" do
+      before { configure_tenant(enforce: true) }
+
+      it "returns 403 (not 404) for an authenticated non-member of the requested org" do
+        user = make_user("enforced-cross-org")
+        # Member of org_a tenant only, but requests org_b: non-member → 403.
+        UserRole.create!(user: user, role: role_all, organization: org_a, route_group: "tenant")
+
+        routes = build_routes
+        status, body = dispatch(routes, "/api/#{org_b.slug}/posts", token: user.api_token)
+        expect(status).to eq(403)
+        expect(body["message"]).to eq("You are not a member of this group")
+      end
+
+      it "returns 200 for a member of the requested org" do
+        user = make_user("enforced-member")
+        UserRole.create!(user: user, role: role_all, organization: org_a, route_group: "tenant")
+
+        routes = build_routes
+        status, _ = dispatch(routes, "/api/#{org_a.slug}/posts", token: user.api_token)
+        expect(status).to eq(200)
+      end
+
+      it "still returns 404 when the org genuinely does not exist" do
+        user = make_user("enforced-missing-org")
+        UserRole.create!(user: user, role: role_all, organization: org_a, route_group: "tenant")
+
+        routes = build_routes
+        status, body = dispatch(routes, "/api/does-not-exist/posts", token: user.api_token)
+        expect(status).to eq(404)
+        expect(body["message"]).to eq("Organization not found")
+      end
+
+      it "returns 401 (unauthenticated) before any org/membership resolution" do
+        routes = build_routes
+        status, _ = dispatch(routes, "/api/#{org_a.slug}/posts", token: "bogus-token-xyz")
+        expect(status).to eq(401)
+      end
+    end
+
+    context "enforcement OFF (default) — unchanged 404 info-hiding" do
+      before { configure_tenant(enforce: false) }
+
+      it "returns 404 for an authenticated user requesting an org they are not in" do
+        user = make_user("off-cross-org")
+        UserRole.create!(user: user, role: role_all, organization: org_a, route_group: "tenant")
+
+        routes = build_routes
+        status, body = dispatch(routes, "/api/#{org_b.slug}/posts", token: user.api_token)
+        expect(status).to eq(404)
+        expect(body["message"]).to eq("Organization not found")
+      end
+
+      it "returns 404 when the org genuinely does not exist" do
+        user = make_user("off-missing-org")
+        UserRole.create!(user: user, role: role_all, organization: org_a, route_group: "tenant")
+
+        routes = build_routes
+        status, _ = dispatch(routes, "/api/nope/posts", token: user.api_token)
+        expect(status).to eq(404)
+      end
+    end
+  end
+
+  # ==================================================================
   # Permission source switch (flag ON resolves from the matched row)
   # ==================================================================
 

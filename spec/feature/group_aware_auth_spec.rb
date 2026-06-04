@@ -139,6 +139,138 @@ RSpec.describe "Group-aware auth routes" do
   end
 
   # ==================================================================
+  # §11.1 — single auth-enabled empty-prefix + no-domain group IS the legacy
+  # auth: the legacy /api/auth/* set adopts its route_group (no colliding set).
+  # ==================================================================
+
+  describe "empty-prefix + no-domain auth group adopts the legacy auth routes (§11.1)" do
+    before do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        # :default has auth: true, empty prefix, no domain — it IS the legacy auth.
+        c.route_group :default, prefix: "", auth: true, models: [:posts]
+      end
+    end
+
+    it "resolves the legacy /api/auth/login to that group's route_group" do
+      routes = build_routes
+      result = recognize(routes, "/api/auth/login")
+      expect(result).to be_a(Hash)
+      expect(result[:route_group]).to eq("default")
+    end
+
+    it "does NOT register a second colliding /api/auth route set" do
+      routes = build_routes
+      # Exactly one route should match the unprefixed auth login path.
+      matching = routes.routes.select do |r|
+        r.path.spec.to_s == "/api/auth/login(.:format)"
+      end
+      expect(matching.length).to eq(1)
+    end
+
+    it "fires the group's hooks at login (no spurious 403, hook context carries the group)" do
+      seen = []
+      hook_class = Class.new(Rhino::AuthHooks) do
+        define_method(:after_login) do |_user, context = {}|
+          seen << context[:route_group]
+        end
+      end
+
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :default, prefix: "", auth: true, hooks: hook_class, models: [:posts]
+      end
+
+      User.create!(name: "D", email: "leg@x.com", api_token: "x")
+
+      routes = build_routes
+      status, body = dispatch(routes, "/api/auth/login",
+                              params: { email: "leg@x.com", password: "password" })
+      expect(status).to eq(200)
+      expect(body["token"]).to be_present
+      expect(seen).to eq(["default"])
+    end
+  end
+
+  describe "empty-prefix + no-domain auth group resolves membership at legacy login (enforcement ON)" do
+    let!(:role) { Role.create!(name: "All", slug: "all-#{SecureRandom.hex(4)}", permissions: ["*"]) }
+
+    before do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :default, prefix: "", auth: true, models: [:posts]
+        c.auth = { enforce_group_membership: true }
+      end
+    end
+
+    it "allows legacy login for a member of the default group (no spurious 403)" do
+      user = User.create!(name: "D", email: "m@x.com", api_token: "x")
+      UserRole.create!(user: user, role: role, organization: nil, route_group: "default")
+
+      routes = build_routes
+      status, body = dispatch(routes, "/api/auth/login",
+                              params: { email: "m@x.com", password: "password" })
+      expect(status).to eq(200)
+      expect(body["token"]).to be_present
+    end
+
+    it "denies legacy login (403) for a non-member of the default group" do
+      user = User.create!(name: "D", email: "nm@x.com", api_token: "x")
+      UserRole.create!(user: user, role: role, organization: nil, route_group: "other")
+
+      routes = build_routes
+      status, body = dispatch(routes, "/api/auth/login",
+                              params: { email: "nm@x.com", password: "password" })
+      expect(status).to eq(403)
+      expect(body["message"]).to eq("You are not a member of this group")
+    end
+  end
+
+  describe "prefixed/domain auth groups still get their own routes alongside an empty-prefix legacy group" do
+    before do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :default, prefix: "", auth: true, models: [:posts]
+        c.route_group :driver, prefix: "driver", auth: true, models: [:posts]
+      end
+    end
+
+    it "keeps the prefixed group's own per-group auth route with its route_group" do
+      routes = build_routes
+      result = recognize(routes, "/api/driver/auth/login")
+      expect(result).to be_a(Hash)
+      expect(result[:route_group]).to eq("driver")
+    end
+
+    it "the legacy route still adopts the empty-prefix group's route_group" do
+      routes = build_routes
+      result = recognize(routes, "/api/auth/login")
+      expect(result[:route_group]).to eq("default")
+    end
+  end
+
+  describe "no auth-enabled group → legacy auth is unchanged (group-less)" do
+    before do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.model :posts, "Post"
+        c.route_group :driver, prefix: "driver", auth: false, models: [:posts]
+      end
+    end
+
+    it "the legacy /api/auth/login carries no route_group" do
+      routes = build_routes
+      result = recognize(routes, "/api/auth/login")
+      expect(result).to be_a(Hash)
+      expect(result[:route_group]).to be_nil
+    end
+  end
+
+  # ==================================================================
   # Domain-based per-group auth
   # ==================================================================
 

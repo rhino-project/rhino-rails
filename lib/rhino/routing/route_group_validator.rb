@@ -35,6 +35,8 @@ module Rhino
           groups = config.route_groups
           names = groups.keys
 
+          validate_legacy_auth_collision!(config)
+
           names.combination(2).each do |a_name, b_name|
             a = groups[a_name]
             b = groups[b_name]
@@ -50,6 +52,25 @@ module Rhino
         end
 
         private
+
+        # GROUP_AUTH_DESIGN.md §11.1: at most ONE auth-enabled group may have an
+        # empty prefix AND no domain — that group becomes the legacy /api/auth/*
+        # set. Two or more are genuinely indistinguishable for auth routing (they
+        # would all collide on the same unprefixed auth paths), so raise.
+        def validate_legacy_auth_collision!(config)
+          return unless config.respond_to?(:auth_enabled_legacy_groups)
+
+          legacy = config.auth_enabled_legacy_groups
+          return if legacy.length < 2
+
+          names = legacy.map { |n| ":#{n}" }.join(", ")
+          raise RouteGroupConflictError,
+                "Route groups #{names} all declare auth: true with an empty prefix " \
+                "and no domain, so their auth routes would be identical to the legacy " \
+                "/api/auth/* set and to each other — there is no way to tell which " \
+                "group an unprefixed auth request belongs to. Give all but one of " \
+                "them a distinct prefix: or a domain: to disambiguate their auth routes."
+        end
 
         def normalize_prefix(group)
           group[:prefix].to_s

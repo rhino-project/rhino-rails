@@ -146,6 +146,21 @@ module Rhino
                    .select { |name| group_auth_enabled?(name) }
     end
 
+    # Names of auth-enabled groups that have an empty prefix AND no domain, i.e.
+    # groups whose auth routes would be byte-for-byte identical to the legacy
+    # unprefixed /api/auth/* set (GROUP_AUTH_DESIGN.md §11.1). Such a group IS
+    # the default/legacy auth: the legacy routes adopt its route_group/hooks
+    # instead of registering a colliding second set. Two or more is a conflict
+    # (raised by the route-group validator).
+    def auth_enabled_legacy_groups
+      auth_enabled_groups.select do |name|
+        group = @route_groups[name.to_sym]
+        prefix = group[:prefix].to_s
+        domain = group[:domain]
+        prefix.empty? && (domain.nil? || domain.to_s.strip.empty?)
+      end
+    end
+
     # Resolve the configured lifecycle-hooks class for a group, instantiated.
     # Returns nil when the group has no hooks configured. Accepts a class, a
     # class name string, or an instance.

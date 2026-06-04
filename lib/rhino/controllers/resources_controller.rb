@@ -21,9 +21,18 @@ module Rhino
 
     before_action :set_model_class
     before_action :set_route_group
+    # GROUP_AUTH_DESIGN.md §11.2: when enforce_group_membership is ON, the
+    # membership gate (403) must take precedence over the org-resolution 404, so
+    # an authenticated non-member of the requested group gets 403 rather than the
+    # info-hiding 404. We therefore authenticate and run the gate BEFORE resolving
+    # the organization when enforcement is on; the gate resolves the org itself as
+    # needed (a genuinely non-existent org still 404s inside the gate). When
+    # enforcement is OFF (default), the original order is preserved byte-for-byte:
+    # resolve_organization (404) runs first, then authenticate.
+    before_action :authenticate_user_before_org!, if: :authenticate_before_org?
+    before_action :enforce_group_membership, if: :authenticate_before_org?
     before_action :resolve_organization
-    before_action :authenticate_user!, unless: :public_route_group?
-    before_action :enforce_group_membership, unless: :public_route_group?
+    before_action :authenticate_user_after_org!, if: :authenticate_after_org?
 
     # GET /api/{slug}
     def index
@@ -277,6 +286,24 @@ module Rhino
       current_route_group == "public"
     end
 
+    # Whether enforce_group_membership is on (GROUP_AUTH_DESIGN.md §6/§11.2).
+    def membership_enforced?
+      Rhino.config.respond_to?(:enforce_group_membership?) &&
+        Rhino.config.enforce_group_membership?
+    end
+
+    # When enforcement is ON we authenticate + run the membership gate BEFORE
+    # resolving the org so a 403 (non-member) takes precedence over the org 404.
+    def authenticate_before_org?
+      !public_route_group? && membership_enforced?
+    end
+
+    # When enforcement is OFF (default) we keep today's order: resolve the org
+    # (its 404) first, then authenticate.
+    def authenticate_after_org?
+      !public_route_group? && !membership_enforced?
+    end
+
     def current_route_group
       params[:route_group]
     end
@@ -293,15 +320,56 @@ module Rhino
     # the enforce_group_membership flag; off = unchanged. Runs after auth, so an
     # authenticated user without a matching membership row gets 403.
     def enforce_group_membership
-      return unless Rhino.config.respond_to?(:enforce_group_membership?)
-      return unless Rhino.config.enforce_group_membership?
+      return unless membership_enforced?
 
       user = current_user
       return unless user # unauthenticated already handled by authenticate_user!
 
-      unless Rhino::GroupMembership.member?(user, current_route_group, current_organization)
+      # §11.2: this gate runs BEFORE resolve_organization, so it resolves the org
+      # itself. A non-existent org identifier still 404s (info-hiding for a
+      # resource that cannot exist); an authenticated NON-MEMBER gets 403, taking
+      # precedence over the cross-org 404. resolve_organization re-runs afterward
+      # to set request.env/RequestStore for the rest of the request.
+      org = resolve_membership_organization
+      return if performed? # 404: org identifier supplied but no such org
+
+      unless Rhino::GroupMembership.member?(user, current_route_group, org)
         render json: { message: "You are not a member of this group" }, status: :forbidden
       end
+    end
+
+    # Resolve the organization for the membership gate from the route's
+    # :organization param. Renders 404 and returns nil when an identifier is
+    # supplied but matches no organization. Returns nil (no render) when no
+    # identifier is present (non-tenant groups).
+    def resolve_membership_organization
+      org_identifier = params[:organization]
+      return nil unless org_identifier.present?
+
+      org_class = "Organization".safe_constantize
+      return nil unless org_class
+
+      column = Rhino.config.multi_tenant[:organization_identifier_column] || "id"
+      organization = org_class.find_by(column => org_identifier)
+
+      unless organization
+        render json: { message: "Organization not found" }, status: :not_found
+        return nil
+      end
+
+      organization
+    end
+
+    # Two distinct callback names so the before_action chain registers BOTH
+    # entries (Rails de-duplicates callbacks by method name; reusing
+    # :authenticate_user! for both the pre- and post-org slots would collapse
+    # them into one with a single condition). Both delegate to authenticate_user!.
+    def authenticate_user_before_org!
+      authenticate_user!
+    end
+
+    def authenticate_user_after_org!
+      authenticate_user!
     end
 
     def authenticate_user!

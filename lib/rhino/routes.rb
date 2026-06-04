@@ -36,9 +36,31 @@ module Rhino
         # route_group default so the controller can resolve the group.
         auth_groups = config.auth_enabled_groups
 
-        # The legacy unprefixed /api/auth/* set always remains and maps to the
-        # ':default' group when one is configured (otherwise no group → nil).
-        legacy_auth_group = route_groups.key?(:default) ? "default" : nil
+        # GROUP_AUTH_DESIGN.md §11.1: an auth-enabled group with an empty prefix
+        # AND no domain would register an auth route identical to the legacy
+        # /api/auth/* set; the legacy route would win with no route_group, so the
+        # group's hooks/membership never engage (spurious login 403). Such a
+        # group IS the default/legacy auth: the legacy routes adopt its
+        # route_group, and we do NOT register a colliding second set for it.
+        #
+        # If TWO or more such groups exist they are genuinely indistinguishable;
+        # the route-group validator raises before we get here. So at most one.
+        legacy_group_override = config.auth_enabled_legacy_groups.first
+
+        # The legacy unprefixed /api/auth/* set always remains. It maps to:
+        #   1. the single empty-prefix/no-domain auth-enabled group (§11.1), else
+        #   2. the ':default' group when one is configured, else
+        #   3. no group (nil) — today's group-less behavior.
+        legacy_auth_group =
+          if legacy_group_override
+            legacy_group_override.to_s
+          elsif route_groups.key?(:default)
+            "default"
+          end
+
+        # The override group must not also register its own per-group auth set,
+        # because that set would be byte-for-byte the legacy one (collision).
+        auth_groups = auth_groups.reject { |name| name == legacy_group_override }
 
         router.instance_eval do
           scope path: "api", defaults: { format: :json } do

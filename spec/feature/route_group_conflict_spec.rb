@@ -107,6 +107,56 @@ RSpec.describe "Route group conflict validation" do
     end
   end
 
+  describe "§11.1 — two+ auth-enabled empty-prefix + no-domain groups" do
+    it "raises even when their models are disjoint (auth routes still collide)" do
+      configure do |c|
+        c.route_group :a, prefix: "", auth: true, models: [:posts]
+        c.route_group :b, prefix: "", auth: true, models: [:blogs]
+      end
+
+      expect { validate! }.to raise_error(Rhino::RouteGroupConflictError) do |error|
+        expect(error.message).to include(":a", ":b")
+        expect(error.message).to match(/auth/i)
+      end
+    end
+
+    it "raises at draw time too" do
+      configure do |c|
+        c.route_group :a, prefix: "", auth: true, models: [:posts]
+        c.route_group :b, prefix: "", auth: true, models: [:blogs]
+      end
+
+      expect { build_routes }.to raise_error(Rhino::RouteGroupConflictError)
+    end
+
+    it "does NOT raise when only one such group is auth-enabled (the other is auth: false)" do
+      configure do |c|
+        c.route_group :a, prefix: "", auth: true, models: [:posts]
+        c.route_group :b, prefix: "", auth: false, models: [:blogs]
+      end
+
+      expect { validate! }.not_to raise_error
+    end
+
+    it "does NOT raise when one of two empty-prefix auth groups has a domain" do
+      configure do |c|
+        c.route_group :a, prefix: "", auth: true, models: [:posts]
+        c.route_group :b, prefix: "", domain: "admin.example.com", auth: true, models: [:blogs]
+      end
+
+      expect { validate! }.not_to raise_error
+    end
+
+    it "does NOT raise for a single empty-prefix + no-domain auth group" do
+      configure do |c|
+        c.route_group :default, prefix: "", auth: true, models: :all
+      end
+
+      expect { validate! }.not_to raise_error
+      expect { build_routes }.not_to raise_error
+    end
+  end
+
   describe "the error names the offending pair and details" do
     it "names only the conflicting pair among several groups" do
       configure do |c|
