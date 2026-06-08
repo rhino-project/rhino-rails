@@ -83,18 +83,29 @@ RSpec.describe Rhino::Commands::InstallCommand do
   # ------------------------------------------------------------------
 
   describe "#create_multi_tenant_migrations" do
-    it "creates 4 migration files" do
+    it "creates 5 migration files" do
       command.send(:create_multi_tenant_migrations)
 
       user_files = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_users.rb"))
       org_files = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_organizations.rb"))
       role_files = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_roles.rb"))
       user_role_files = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_user_roles.rb"))
+      org_role_perm_files = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_org_role_permissions.rb"))
 
       expect(user_files.length).to eq(1)
       expect(org_files.length).to eq(1)
       expect(role_files.length).to eq(1)
       expect(user_role_files.length).to eq(1)
+      expect(org_role_perm_files.length).to eq(1)
+    end
+
+    it "adds grant/deny delta columns to the user_roles migration" do
+      command.send(:create_multi_tenant_migrations)
+
+      user_role_file = Dir.glob(File.join(tmp_dir, "db/migrate/*_create_user_roles.rb")).first
+      content = File.read(user_role_file)
+      expect(content).to include("granted_permissions")
+      expect(content).to include("denied_permissions")
     end
 
     it "generates non-empty migration content" do
@@ -122,10 +133,10 @@ RSpec.describe Rhino::Commands::InstallCommand do
   # ------------------------------------------------------------------
 
   describe "#create_multi_tenant_models" do
-    it "creates User, Organization, Role, and UserRole models" do
+    it "creates User, Organization, Role, UserRole, and OrgRolePermission models" do
       command.send(:create_multi_tenant_models, %w[admin editor viewer])
 
-      %w[user organization role user_role].each do |model|
+      %w[user organization role user_role org_role_permission].each do |model|
         path = File.join(tmp_dir, "app/models/#{model}.rb")
         expect(File.exist?(path)).to be true
         expect(File.read(path)).not_to be_empty

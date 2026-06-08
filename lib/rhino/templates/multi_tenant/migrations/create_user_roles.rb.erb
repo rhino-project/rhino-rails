@@ -11,7 +11,14 @@ class CreateUserRoles < ActiveRecord::Migration[8.0]
       # Group membership scope. NULL = wildcard (member of every group), which
       # keeps existing rows valid when enforce_group_membership is enabled.
       t.string :route_group
+      # Legacy per-user permission set (full list). Still honored as an allow
+      # layer for backward compatibility.
       t.json :permissions, default: []
+      # Layered-permission deltas applied on top of the org role layer
+      # (org_role_permissions). granted = additive, denied = subtractive.
+      # Deny always wins. Leave empty to inherit the role layer as-is.
+      t.json :granted_permissions, default: []
+      t.json :denied_permissions, default: []
 
       t.timestamps
     end

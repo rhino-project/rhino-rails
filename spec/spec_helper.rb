@@ -77,6 +77,9 @@ ActiveRecord::Schema.define do
     t.datetime :reset_password_sent_at
     t.datetime :email_verified_at
     t.json :permissions
+    # Optional user-level deltas for the non-tenant (no-org) resolution path.
+    t.json :granted_permissions
+    t.json :denied_permissions
     t.timestamps
   end
   add_index :users, :email, unique: true
@@ -87,6 +90,9 @@ ActiveRecord::Schema.define do
     t.references :role, null: false, foreign_key: true
     t.string :route_group
     t.json :permissions, default: []
+    # Layered-permission deltas applied on top of the org role layer.
+    t.json :granted_permissions, default: []
+    t.json :denied_permissions, default: []
     t.timestamps
   end
   # DB-portable expression index: COALESCE collapses NULL org/group so two
@@ -95,6 +101,15 @@ ActiveRecord::Schema.define do
   add_index :user_roles,
             "user_id, COALESCE(organization_id, 0), role_id, COALESCE(route_group, '')",
             unique: true, name: "index_user_roles_on_user_org_role_group"
+
+  # Shared "role layer": the permission set a role has within an organization.
+  create_table :org_role_permissions, force: true do |t|
+    t.references :organization, null: false, foreign_key: true
+    t.references :role, null: false, foreign_key: true
+    t.json :permissions, default: []
+    t.timestamps
+  end
+  add_index :org_role_permissions, %i[organization_id role_id], unique: true
 
   create_table :posts, force: true do |t|
     t.references :organization, foreign_key: true
@@ -172,6 +187,11 @@ end
 class UserRole < ActiveRecord::Base
   belongs_to :user
   belongs_to :organization, optional: true
+  belongs_to :role
+end
+
+class OrgRolePermission < ActiveRecord::Base
+  belongs_to :organization
   belongs_to :role
 end
 

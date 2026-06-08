@@ -109,7 +109,8 @@ module Rhino
           "create_users" => "#{timestamp}00",
           "create_organizations" => "#{timestamp}01",
           "create_roles" => "#{timestamp}02",
-          "create_user_roles" => "#{timestamp}03"
+          "create_user_roles" => "#{timestamp}03",
+          "create_org_role_permissions" => "#{timestamp}04"
         }.each do |name, ts|
           template = File.join(templates_dir, "#{name}.rb.erb")
           next unless File.exist?(template)
@@ -125,7 +126,7 @@ module Rhino
 
         templates_dir = File.expand_path("../../templates/multi_tenant/models", __FILE__)
 
-        %w[user organization role user_role].each do |model|
+        %w[user organization role user_role org_role_permission].each do |model|
           template = File.join(templates_dir, "#{model}.rb.erb")
           next unless File.exist?(template)
 

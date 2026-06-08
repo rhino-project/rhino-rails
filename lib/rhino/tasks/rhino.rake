@@ -26,6 +26,19 @@ namespace :rhino do
     cmd.perform
   end
 
+  desc "Lift per-user permissions into the org_role_permissions role layer (APPLY=1 to write)"
+  task :permissions_migrate, [:apply] => :environment do |_t, args|
+    require "rhino/permissions_migrator"
+    apply = args[:apply].to_s == "apply" || ENV["APPLY"] == "1"
+    result = Rhino::PermissionsMigrator.call(apply: apply)
+    result.lines.each { |line| puts line }
+    verb = apply ? "Migrated" : "Would migrate"
+    summary = "#{verb} #{result.groups_migrated} (org, role) group(s); #{result.rows_reduced} user row(s) reduced to deltas."
+    summary += " Skipped #{result.skipped_existing} group(s) with an existing role layer." if result.skipped_existing.positive?
+    puts summary
+    puts "Dry-run only. Re-run with APPLY=1 to write these changes." if !apply && result.groups_migrated.positive?
+  end
+
   desc "Generate TypeScript type definitions from registered Rhino models"
   task :export_types, [:output] => :environment do |_t, args|
     require "rhino/commands/export_types_command"
