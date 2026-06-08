@@ -4,6 +4,7 @@ require "rhino/commands/base_command"
 require "fileutils"
 require "rhino/blueprint/blueprint_parser"
 require "rhino/blueprint/blueprint_validator"
+require "rhino/blueprint/sorter"
 require "rhino/blueprint/manifest_manager"
 require "rhino/blueprint/generators/policy_generator"
 require "rhino/blueprint/generators/test_generator"
@@ -84,6 +85,27 @@ module Rhino
         end
 
         say "  Found #{yaml_files.length} blueprint(s)", :cyan
+
+        # Order so a referenced model's table is migrated before any model that
+        # foreign-keys to it (parents before children). Migration timestamps are
+        # assigned in iteration order, so this is what makes the set runnable.
+        parsed_for_order = []
+        unparseable = []
+        yaml_files.each do |f|
+          parsed_for_order << { file: f, blueprint: parser.parse_model(f) }
+        rescue StandardError
+          unparseable << f
+        end
+        sorter = Rhino::Blueprint::Sorter.new
+        ordered = sorter.sort(parsed_for_order.map { |p| p[:blueprint] })
+        file_by_model = parsed_for_order.each_with_object({}) do |p, h|
+          h[p[:blueprint][:model]] ||= p[:file]
+        end
+        yaml_files = ordered.map { |bp| file_by_model[bp[:model]] }.compact + unparseable
+        if sorter.cycles.any?
+          say "  ⚠ Circular foreign-key dependency among: #{sorter.cycles.join(', ')}. " \
+              "Migration order is best-effort — make one side nullable or add the FK in a later migration.", :yellow
+        end
 
         # 3. Process each blueprint
         is_multi_tenant = multi_tenant_enabled?
