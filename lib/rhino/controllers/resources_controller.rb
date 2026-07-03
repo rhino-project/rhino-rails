@@ -16,6 +16,10 @@ module Rhino
       render json: { message: "This action is unauthorized." }, status: :forbidden
     end
 
+    rescue_from Rhino::ScopeNotAllowedError do |e|
+      render json: { message: "Scope '#{e.message}' is not allowed" }, status: :forbidden
+    end
+
     # Cache for auto-detected organization paths (class-level, survives across requests)
     @@organization_path_cache = {}
 
@@ -38,7 +42,7 @@ module Rhino
     def index
       authorize model_class, :index?, policy_class: policy_for(model_class)
 
-      builder = QueryBuilder.new(model_class, params: params)
+      builder = QueryBuilder.new(model_class, params: params, named_scopes: true)
       apply_organization_scope(builder)
       builder.build
 
@@ -170,7 +174,7 @@ module Rhino
     def trashed
       authorize model_class, :view_trashed?, policy_class: policy_for(model_class)
 
-      builder = QueryBuilder.new(model_class.discarded, params: params)
+      builder = QueryBuilder.new(model_class.discarded, params: params, named_scopes: true)
       apply_organization_scope(builder)
       builder.build
 
@@ -900,7 +904,7 @@ module Rhino
     end
 
     def params_hash
-      params.except(:controller, :action, :model_slug, :route_group, :organization, :id, :format).to_unsafe_h
+      params.except(:controller, :action, :model_slug, :route_group, :organization, :id, :format, :scope).to_unsafe_h
     end
   end
 end

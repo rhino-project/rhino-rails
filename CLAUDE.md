@@ -83,6 +83,7 @@ This library provides the following features. When modifying or extending any of
 | 26 | **Generator CLI** (`rhino:install`, `rhino:generate`, `rhino:blueprint`) | `commands/` |
 | 27 | **Postman Export** (auto-generated collection with all endpoints) | `commands/export_postman_command.rb` |
 | 28 | **Blueprint System** (YAML-to-code generation for models, policies, factories, tests, seeders) | `blueprint/` |
+| 29 | **Named Scopes** (`?scope=availableForDrivers` whitelisted via `rhino_scopes` + `rhino_default_scope`; camelCase→underscored; unknown → 403; `index`/`trashed` only, `show` stays unscoped) | `query_builder.rb`, `concerns/has_rhino.rb`, `resources_controller.rb`, `scope_not_allowed_error.rb` |
 
 ## Running Tests
 

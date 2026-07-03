@@ -3,6 +3,7 @@
 require "rhino/version"
 require "rhino/configuration"
 require "rhino/auth_rejected"
+require "rhino/scope_not_allowed_error"
 require "rhino/auth_hooks"
 require "rhino/group_membership"
 require "rhino/resource_scope"

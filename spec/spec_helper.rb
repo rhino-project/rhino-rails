@@ -18,6 +18,7 @@ require "active_support/all"
 require "action_controller"
 require "pundit"
 require "discard"
+require "request_store"
 
 # Set up in-memory SQLite database
 ActiveRecord::Base.establish_connection(

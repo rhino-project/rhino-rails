@@ -13,6 +13,8 @@ module Rhino
   #     rhino_includes :user, :comments
   #     rhino_fields :id, :title, :status, :created_at
   #     rhino_search :title, :content, 'user.name'
+  #     rhino_scopes :active, available_for_drivers: Scopes::AvailableForDriversScope
+  #     rhino_default_scope :active
   #     rhino_per_page 25
   #     rhino_pagination_enabled true
   #     rhino_middleware 'throttle:60,1'
@@ -24,6 +26,8 @@ module Rhino
 
     included do
       class_attribute :allowed_filters, default: []
+      class_attribute :allowed_scopes, default: {}
+      class_attribute :default_rhino_scope, default: nil
       class_attribute :allowed_sorts, default: []
       class_attribute :default_sort_field, default: nil
       class_attribute :allowed_includes, default: []
@@ -40,6 +44,23 @@ module Rhino
     class_methods do
       def rhino_filters(*fields)
         self.allowed_filters = fields.map(&:to_s)
+      end
+
+      # Whitelist client-selectable named scopes for ?scope=.
+      #   rhino_scopes :active, available_for_drivers: Scopes::AvailableForDriversScope
+      # Bare symbols must name an existing ActiveRecord scope/class method on the model.
+      # Hash values may be a Proc(relation, user) or a Rhino::ResourceScope subclass.
+      def rhino_scopes(*names, **named)
+        merged = allowed_scopes.dup
+        names.each { |n| merged[n.to_s] = n.to_sym }
+        named.each { |k, v| merged[k.to_s] = v }
+        self.allowed_scopes = merged
+      end
+
+      # Named scope applied when no ?scope param is sent. Convenience, not a
+      # security boundary. Value is the scope name (string/symbol).
+      def rhino_default_scope(name)
+        self.default_rhino_scope = name.to_s
       end
 
       def rhino_sorts(*fields)

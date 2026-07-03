@@ -14,14 +14,16 @@ module Rhino
   class QueryBuilder
     attr_reader :scope, :model_class, :params
 
-    def initialize(model_class, params: {})
+    def initialize(model_class, params: {}, named_scopes: false)
       @model_class = model_class
       @scope = model_class.all
       @params = params
+      @named_scopes = named_scopes
     end
 
     # Apply all query modifications based on params and model config.
     def build
+      apply_named_scope if @named_scopes
       apply_filters
       apply_default_sort
       apply_sorts
@@ -61,6 +63,41 @@ module Rhino
     end
 
     private
+
+    # ------------------------------------------------------------------
+    # Named scopes: ?scope=availableForDrivers
+    # ------------------------------------------------------------------
+    #
+    # Only runs for collection endpoints (index/trashed), which pass
+    # +named_scopes: true+. `show` (including its ?include= build path) stays
+    # unscoped so a record excluded by the default scope is still viewable.
+    def apply_named_scope
+      requested = params[:scope].presence
+      name = requested ? requested.to_s.underscore : model_class.try(:default_rhino_scope)
+      return unless name
+
+      allowed = model_class.try(:allowed_scopes) || {}
+      entry = allowed[name]
+      # The default scope is implicitly allowed when requested by name.
+      entry ||= name.to_sym if name == model_class.try(:default_rhino_scope)
+
+      # Echo the client's wire name (not the underscored form) in the error.
+      raise Rhino::ScopeNotAllowedError, (requested ? requested.to_s : name) if entry.nil?
+
+      user = defined?(RequestStore) ? RequestStore.store[:rhino_current_user] : nil
+
+      @scope =
+        case entry
+        when Symbol
+          # Whitelisted AR scope. Client input never reaches public_send unless the
+          # developer declared it via rhino_scopes. .merge composes with default_scopes.
+          @scope.merge(model_class.public_send(entry))
+        when Proc
+          entry.call(@scope, user)
+        else
+          entry.new.apply(@scope) # Rhino::ResourceScope subclass (user/org/role helpers)
+        end
+    end
 
     # ------------------------------------------------------------------
     # Filtering: ?filter[status]=published&filter[user_id]=1

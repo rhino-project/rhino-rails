@@ -104,6 +104,36 @@ module Rhino
     #     self.allowed_filters = %w[status user_id category_id]
     self.allowed_filters = []
 
+    # @!attribute [rw] allowed_scopes
+    #   Client-selectable named scopes (whitelist for +?scope=+).
+    #
+    #   Controls which named scopes can be requested via +?scope=name+
+    #   (camelCase on the wire, underscored internally). Only whitelisted
+    #   scopes are accepted — unknown/unlisted names return 403.
+    #
+    #   Set via DSL: +rhino_scopes :active, available_for_drivers: Scopes::AvailableForDriversScope+
+    #
+    #   Query: +GET /api/posts?scope=availableForDrivers+
+    #
+    #   @return [Hash{String => Symbol, Proc, Class}]
+    #   @example
+    #     rhino_scopes :active, available_for_drivers: Scopes::AvailableForDriversScope
+    self.allowed_scopes = {}
+
+    # @!attribute [rw] default_rhino_scope
+    #   Named scope applied automatically when no +?scope+ param is sent.
+    #
+    #   This is a listing convenience, not a security boundary. The default
+    #   scope is always requestable by name even if it is not otherwise
+    #   whitelisted via +rhino_scopes+.
+    #
+    #   Set via DSL: +rhino_default_scope :active+
+    #
+    #   @return [String, nil]
+    #   @example
+    #     rhino_default_scope :active
+    self.default_rhino_scope = nil
+
     # @!attribute [rw] allowed_sorts
     #   Sortable columns.
     #
