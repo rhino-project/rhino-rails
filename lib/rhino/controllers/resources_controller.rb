@@ -446,61 +446,10 @@ module Rhino
       org = current_organization
       return unless org
 
-      # When the resource IS the Organization model
-      if org.class == model_class
-        builder.instance_variable_set(
-          :@scope,
-          builder.scope.where(model_class.primary_key => org.send(model_class.primary_key))
-        )
-        return
-      end
-
-      # Check for scopeForOrganization
-      if model_class.respond_to?(:for_organization)
-        builder.instance_variable_set(:@scope, model_class.for_organization(org))
-        return
-      end
-
-      # Check for organization_id column
-      if model_class.column_names.include?("organization_id")
-        builder.instance_variable_set(
-          :@scope,
-          builder.scope.where(organization_id: org.id)
-        )
-        return
-      end
-
-      # Auto-detect from belongs_to relationships
-      detected_path = discover_organization_path(model_class)
-      if detected_path.present?
-        apply_organization_scope_through_relationship(builder, org, detected_path)
-      end
-    end
-
-    def apply_organization_scope_through_relationship(builder, organization, relationship_path)
-      if relationship_path.include?(".")
-        # Nested path: 'post.blog' -> joins(post: :blog).where(blogs: { organization_id: org.id })
-        parts = relationship_path.split(".")
-        join_chain = parts.reverse.inject(:organization) { |inner, outer| { outer.to_sym => inner } }
-
-        builder.instance_variable_set(
-          :@scope,
-          builder.scope.joins(join_chain.is_a?(Symbol) ? join_chain : parts.first.to_sym => join_chain)
-                       .where(organizations: { id: organization.id })
-        )
-      else
-        # Single relationship
-        assoc = model_class.reflect_on_association(relationship_path.to_sym)
-        return unless assoc
-
-        if assoc.klass.column_names.include?("organization_id")
-          builder.instance_variable_set(
-            :@scope,
-            builder.scope.joins(relationship_path.to_sym)
-                         .where(assoc.klass.table_name => { organization_id: organization.id })
-          )
-        end
-      end
+      builder.instance_variable_set(
+        :@scope,
+        Rhino::ScopesToOrganization.scope_to_organization(builder.scope, model_class, org)
+      )
     end
 
     def add_organization_to_data(data)
@@ -515,9 +464,10 @@ module Rhino
     # Recursively discover the relationship path from a model to Organization
     # by introspecting BelongsTo associations. Returns dot-notation path or nil.
     #
-    # Results are cached per model class to avoid repeated reflection.
+    # The recursion itself lives in Rhino::ScopesToOrganization (the extracted,
+    # pure implementation) so the controller and the custom-query resolver share
+    # one code path. The controller keeps its own per-class cache for back-compat.
     def discover_organization_path(klass, visited = [], max_depth = 3)
-      # Return cached result (including nil)
       if @@organization_path_cache.key?(klass.name)
         return @@organization_path_cache[klass.name]
       end
@@ -528,65 +478,7 @@ module Rhino
     end
 
     def _discover_organization_path_recursive(klass, visited, max_depth)
-      return nil if max_depth <= 0 || visited.include?(klass.name)
-
-      visited = visited + [klass.name]
-
-      begin
-        associations = klass.reflect_on_all_associations(:belongs_to)
-      rescue StandardError
-        return nil
-      end
-
-      matching_paths = []
-
-      associations.each do |assoc|
-        begin
-          related_class = assoc.klass
-        rescue StandardError
-          next
-        end
-
-        # Direct match: related model IS Organization
-        if related_class.name == "Organization"
-          matching_paths << assoc.name.to_s
-          next
-        end
-
-        # Related model has organization_id column
-        begin
-          if related_class.column_names.include?("organization_id")
-            matching_paths << assoc.name.to_s
-            next
-          end
-        rescue StandardError
-          # Table may not exist yet
-        end
-
-        # Related model includes BelongsToOrganization concern
-        if related_class.include?(Rhino::BelongsToOrganization)
-          matching_paths << assoc.name.to_s
-          next
-        end
-
-        # Recurse into related model's BelongsTo associations
-        sub_path = _discover_organization_path_recursive(related_class, visited, max_depth - 1)
-        if sub_path.present?
-          matching_paths << "#{assoc.name}.#{sub_path}"
-        end
-      end
-
-      return nil if matching_paths.empty?
-
-      if matching_paths.length > 1
-        Rails.logger&.debug(
-          "Rhino: Model #{klass.name} has multiple BelongsTo paths to Organization. " \
-          "Using '#{matching_paths[0]}'. " \
-          "Paths found: #{matching_paths.inspect}"
-        )
-      end
-
-      matching_paths[0]
+      Rhino::ScopesToOrganization._discover_organization_path_recursive(klass, visited, max_depth)
     end
 
     # ------------------------------------------------------------------
