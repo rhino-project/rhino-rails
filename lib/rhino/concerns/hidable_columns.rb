@@ -103,6 +103,10 @@ module Rhino
       if permitted && permitted != ['*']
         permitted_set = Set.new(permitted.map(&:to_s))
         permitted_set.add('id') # id is always allowed
+        # The route key column is always allowed too — responses must stay
+        # routable even when a policy whitelist omits it.
+        route_key = self.class.try(:rhino_resolved_route_key)
+        permitted_set.add(route_key.to_s) if route_key
         result.select! { |key, _| permitted_set.include?(key) }
       end
 
@@ -168,6 +172,13 @@ module Rhino
         if permitted != ['*']
           all_columns = self.class.column_names
           not_permitted = all_columns - permitted.map(&:to_s)
+          # A configured route key is never hidden by a policy whitelist —
+          # responses must stay routable. Default path (route key == primary
+          # key) is intentionally untouched for backward compatibility.
+          route_key = self.class.try(:rhino_resolved_route_key)
+          if route_key && route_key.to_s != self.class.primary_key.to_s
+            not_permitted -= [route_key.to_s]
+          end
           hidden.concat(not_permitted)
         end
       end

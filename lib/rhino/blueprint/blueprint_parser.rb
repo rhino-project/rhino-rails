@@ -96,7 +96,8 @@ module Rhino
           owner: options.fetch("owner", nil),
           except_actions: options.fetch("except_actions", []),
           pagination: options.fetch("pagination", false),
-          per_page: options.fetch("per_page", 25)
+          per_page: options.fetch("per_page", 25),
+          route_key: options.fetch("route_key", nil)
         }
       end
 

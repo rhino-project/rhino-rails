@@ -23,9 +23,12 @@ module Rhino
           slug = blueprint[:slug]
           permissions = blueprint[:permissions]
           columns = blueprint[:columns]
+          # URL segment attribute for member endpoints: the configured route
+          # key, or the primary key (id) when none is set.
+          route_key = (blueprint[:options] || {})[:route_key] || "id"
           factory_name = model_to_factory(model)
 
-          role_contexts = build_role_contexts(slug, factory_name, permissions, columns, is_multi_tenant, org_identifier)
+          role_contexts = build_role_contexts(slug, factory_name, permissions, columns, is_multi_tenant, org_identifier, route_key)
 
           if is_multi_tenant
             wrap_multi_tenant(model, slug, role_contexts, org_identifier)
@@ -49,7 +52,7 @@ module Rhino
           model.gsub(/([a-z])([A-Z])/, '\1_\2').downcase
         end
 
-        def build_role_contexts(slug, factory_name, permissions, columns, is_multi_tenant, org_identifier)
+        def build_role_contexts(slug, factory_name, permissions, columns, is_multi_tenant, org_identifier, route_key = "id")
           return "" if permissions.empty?
 
           all_defined_actions = permissions.values.flat_map { |p| p[:actions] }.uniq & ALL_ACTIONS
@@ -66,18 +69,18 @@ module Rhino
 
             # Individual allowed action tests
             allowed.each do |action|
-              lines << build_single_action_test(slug, action, is_multi_tenant, org_identifier, true)
+              lines << build_single_action_test(slug, action, is_multi_tenant, org_identifier, true, route_key)
               lines << ""
             end
 
             # Individual blocked action tests
             blocked.each do |action|
-              lines << build_single_action_test(slug, action, is_multi_tenant, org_identifier, false)
+              lines << build_single_action_test(slug, action, is_multi_tenant, org_identifier, false, route_key)
               lines << ""
             end
 
             # Field visibility tests
-            field_test = build_field_visibility_test(slug, role, perm, columns, is_multi_tenant, org_identifier)
+            field_test = build_field_visibility_test(slug, role, perm, columns, is_multi_tenant, org_identifier, route_key)
             if field_test
               lines << field_test
               lines << ""
@@ -114,7 +117,7 @@ module Rhino
           end
         end
 
-        def build_single_action_test(slug, action, is_multi_tenant, org_identifier, expect_success)
+        def build_single_action_test(slug, action, is_multi_tenant, org_identifier, expect_success, route_key = "id")
           id_actions = %w[show update destroy restore forceDelete]
           needs_id = id_actions.include?(action)
           needs_discard = %w[restore forceDelete].include?(action)
@@ -126,10 +129,10 @@ module Rhino
           }
 
           action_path_suffix = {
-            "index" => "", "show" => "/\#{record.id}", "store" => "",
-            "update" => "/\#{record.id}", "destroy" => "/\#{record.id}",
-            "trashed" => "/trashed", "restore" => "/\#{record.id}/restore",
-            "forceDelete" => "/\#{record.id}/force-delete"
+            "index" => "", "show" => "/\#{record.#{route_key}}", "store" => "",
+            "update" => "/\#{record.#{route_key}}", "destroy" => "/\#{record.#{route_key}}",
+            "trashed" => "/trashed", "restore" => "/\#{record.#{route_key}}/restore",
+            "forceDelete" => "/\#{record.#{route_key}}/force-delete"
           }
 
           success_codes = { "store" => ":created", "destroy" => ":no_content", "forceDelete" => ":no_content" }
@@ -168,7 +171,7 @@ module Rhino
           lines.join("\n")
         end
 
-        def build_field_visibility_test(slug, role, perm, columns, is_multi_tenant, org_identifier)
+        def build_field_visibility_test(slug, role, perm, columns, is_multi_tenant, org_identifier, route_key = "id")
           return nil unless perm[:actions].include?("show")
           return nil if perm[:show_fields] == ["*"]
           return nil if perm[:show_fields].empty?
@@ -184,9 +187,9 @@ module Rhino
           lines << "      it 'shows only permitted fields' do"
 
           if is_multi_tenant
-            lines << "        get \"/api/\#{org.#{org_identifier}}/#{slug}/\#{record.id}\", headers: auth_headers(user)"
+            lines << "        get \"/api/\#{org.#{org_identifier}}/#{slug}/\#{record.#{route_key}}\", headers: auth_headers(user)"
           else
-            lines << "        get \"/api/#{slug}/\#{record.id}\", headers: auth_headers(user)"
+            lines << "        get \"/api/#{slug}/\#{record.#{route_key}}\", headers: auth_headers(user)"
           end
 
           lines << "        expect(response).to have_http_status(:ok)"

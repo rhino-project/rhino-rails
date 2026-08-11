@@ -121,6 +121,34 @@ RSpec.describe Rhino::Blueprint::Generators::TestGenerator do
     end
   end
 
+  describe "#generate with route_key" do
+    it "uses record.id in member URLs when no route_key is configured" do
+      output = generator.generate(make_blueprint, false)
+
+      expect(output).to include('/api/contracts/#{record.id}"')
+      expect(output).not_to include("record.hash_id")
+    end
+
+    it "uses the route key attribute in member URLs when configured" do
+      bp = make_blueprint(
+        options: { belongs_to_organization: false, soft_deletes: true, audit_trail: false,
+                   owner: nil, except_actions: [], pagination: false, per_page: 25,
+                   route_key: "hash_id" },
+        columns: [
+          { name: "hash_id", type: "string" },
+          { name: "title", type: "string" },
+          { name: "total_value", type: "decimal" }
+        ]
+      )
+      output = generator.generate(bp, false)
+
+      expect(output).to include('/api/contracts/#{record.hash_id}"')
+      expect(output).to include('/api/contracts/#{record.hash_id}/restore')
+      expect(output).to include('/api/contracts/#{record.hash_id}/force-delete')
+      expect(output).not_to include('#{record.id}')
+    end
+  end
+
   describe "#generate non-tenant" do
     it "generates complete RSpec test file" do
       output = generator.generate(make_blueprint, false)

@@ -294,6 +294,30 @@ module Rhino
     self.rhino_except_actions_list = []
 
     # =========================================================================
+    # ROUTE KEY
+    # =========================================================================
+
+    # @!attribute [rw] rhino_route_key_column
+    #   Column matched against the +:id+ URL segment on member endpoints
+    #   (show, update, destroy, restore, force-delete).
+    #
+    #   Default +nil+ = fall back to the global +Rhino.config.route_key+, then
+    #   the primary key (today's behavior). Affects ONLY the URL-segment
+    #   lookup — foreign keys in payloads, nested-operation ids and audit
+    #   references stay primary-key based.
+    #
+    #   Set via DSL: +rhino_route_key :hash_id+
+    #
+    #   Query: +GET /api/jobs/{hash_id}+
+    #
+    #   @return [String, nil]
+    #   @example
+    #     rhino_route_key :hash_id
+    #   @example Direct assignment
+    #     self.rhino_route_key_column = 'hash_id'
+    self.rhino_route_key_column = nil
+
+    # =========================================================================
     # OWNERSHIP / MULTI-TENANCY
     # =========================================================================
 

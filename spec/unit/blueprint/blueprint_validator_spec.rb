@@ -186,6 +186,32 @@ RSpec.describe Rhino::Blueprint::BlueprintValidator do
       expect(result[:errors]).to include(match(/Invalid action 'invalid_action'/))
     end
 
+    it "accepts a route_key that matches a declared column" do
+      bp = make_blueprint(
+        options: make_options(route_key: "hash_id"),
+        columns: [make_column, make_column(name: "hash_id", unique: true)]
+      )
+      result = validator.validate_model(bp)
+      expect(result[:valid]).to be true
+    end
+
+    it "rejects a route_key that matches no declared column" do
+      bp = make_blueprint(options: make_options(route_key: "nonexistent"))
+      result = validator.validate_model(bp)
+      expect(result[:valid]).to be false
+      expect(result[:errors]).to include(match(/route_key 'nonexistent' does not match any declared column/))
+    end
+
+    it "warns when the route_key column is not unique" do
+      bp = make_blueprint(
+        options: make_options(route_key: "hash_id"),
+        columns: [make_column, make_column(name: "hash_id", unique: false)]
+      )
+      result = validator.validate_model(bp)
+      expect(result[:valid]).to be true
+      expect(result[:warnings]).to include(match(/route_key column 'hash_id' is not marked unique/))
+    end
+
     it "rejects invalid relationship type" do
       bp = make_blueprint(relationships: [{ "type" => "manyToMany", "model" => "User" }])
       result = validator.validate_model(bp)

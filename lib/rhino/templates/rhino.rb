@@ -80,6 +80,17 @@ Rhino.configure do |config|
   # config.auth = { enforce_group_membership: false }
 
   # ---------------------------------------------------------------
+  # Route Key
+  # ---------------------------------------------------------------
+  # Global default for which column matches the :id URL segment on member
+  # endpoints (show, update, destroy, restore, force-delete). Default nil =
+  # primary key. Individual models can override with `rhino_route_key :column`.
+  # Affects only URL lookups — foreign keys in payloads and nested-operation
+  # ids stay primary-key based.
+  #
+  # config.route_key = 'hash_id'  # GET /api/jobs/{hash_id}
+
+  # ---------------------------------------------------------------
   # Invitations
   # ---------------------------------------------------------------
   # config.invitations = {

@@ -20,6 +20,7 @@ module Rhino
   #     rhino_middleware 'throttle:60,1'
   #     rhino_middleware_actions store: ['verified'], update: ['verified']
   #     rhino_except_actions :destroy
+  #     rhino_route_key :hash_id
   #   end
   module HasRhino
     extend ActiveSupport::Concern
@@ -39,6 +40,7 @@ module Rhino
       class_attribute :rhino_middleware_actions_map, default: {}
       class_attribute :rhino_except_actions_list, default: []
       class_attribute :rhino_owner_path, default: nil
+      class_attribute :rhino_route_key_column, default: nil
     end
 
     class_methods do
@@ -101,6 +103,36 @@ module Rhino
 
       def rhino_except_actions(*actions)
         self.rhino_except_actions_list = actions.map(&:to_s)
+      end
+
+      # Column matched against the :id URL segment on member endpoints
+      # (show/update/destroy/restore/force_delete).
+      #   rhino_route_key :hash_id   # GET /api/jobs/{hash_id}
+      # Affects ONLY the URL-segment lookup — FK values in payloads, nested
+      # operation ids and audit references stay primary-key based.
+      def rhino_route_key(column)
+        self.rhino_route_key_column = column.to_s
+      end
+
+      # Resolve the effective route key for this model. Precedence:
+      # model-level +rhino_route_key+ → global +Rhino.config.route_key+ →
+      # primary key. O(1): class_attribute + config read; the column presence
+      # check uses ActiveRecord's cached +column_names+ (no queries).
+      #
+      # Raises ArgumentError when a configured key names a column that does
+      # not exist on the model — a clear failure instead of a silent 404.
+      def rhino_resolved_route_key
+        key = rhino_route_key_column.presence || Rhino.config.route_key.presence || primary_key
+        key = key.to_s
+
+        if key != primary_key.to_s && !column_names.include?(key)
+          raise ArgumentError,
+                "Invalid route key for #{name}: column '#{key}' does not exist on table " \
+                "'#{table_name}'. Check `rhino_route_key` on the model or the global " \
+                "`Rhino.config.route_key` setting."
+        end
+
+        key
       end
 
       # Check if model uses soft deletes (Discard gem)

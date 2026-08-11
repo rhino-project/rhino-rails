@@ -104,7 +104,8 @@ module Rhino
         return auth_response if auth_response
 
         builder = QueryBuilder.new(model_class, params: params)
-        builder.instance_variable_set(:@scope, model_class.where(id: record.id))
+        # record is already resolved via the route key; re-query by primary key
+        builder.instance_variable_set(:@scope, model_class.where(model_class.primary_key => record.id))
         apply_organization_scope(builder)
         builder.build
         record = builder.to_scope.first!
@@ -192,7 +193,7 @@ module Rhino
 
     # POST /api/{slug}/:id/restore
     def restore
-      record = model_class.discarded.find(params[:id])
+      record = find_by_route_key(model_class.discarded)
       authorize record, :restore?, policy_class: policy_for(record)
 
       record.undiscard!
@@ -203,7 +204,7 @@ module Rhino
 
     # DELETE /api/{slug}/:id/force-delete
     def force_delete
-      record = model_class.discarded.find(params[:id])
+      record = find_by_route_key(model_class.discarded)
       authorize record, :force_delete?, policy_class: policy_for(record)
 
       record.destroy!
@@ -493,7 +494,32 @@ module Rhino
         scope = scope.where(organization_id: org.id)
       end
 
-      scope.find(params[:id])
+      find_by_route_key(scope)
+    end
+
+    # Column matched against the :id URL segment. Resolution chain:
+    # model's rhino_route_key → Rhino.config.route_key → primary key.
+    # O(1) — class_attribute + config read, no queries.
+    def route_key_for(model_class)
+      if model_class.respond_to?(:rhino_resolved_route_key)
+        model_class.rhino_resolved_route_key
+      else
+        model_class.primary_key
+      end
+    end
+
+    # Look up params[:id] within +scope+ using the resolved route key.
+    # Default path (route key == primary key) uses .find — byte-identical to
+    # the historical behavior. Configured path uses .find_by!, which raises
+    # ActiveRecord::RecordNotFound with the same 404 semantics.
+    def find_by_route_key(scope)
+      key = route_key_for(model_class)
+
+      if key.to_s == model_class.primary_key.to_s
+        scope.find(params[:id])
+      else
+        scope.find_by!(key => params[:id])
+      end
     end
 
     # ------------------------------------------------------------------

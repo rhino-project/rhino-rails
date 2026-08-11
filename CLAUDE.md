@@ -84,6 +84,7 @@ This library provides the following features. When modifying or extending any of
 | 27 | **Postman Export** (auto-generated collection with all endpoints) | `commands/export_postman_command.rb` |
 | 28 | **Blueprint System** (YAML-to-code generation for models, policies, factories, tests, seeders) | `blueprint/` |
 | 29 | **Named Scopes** (`?scope=availableForDrivers` whitelisted via `rhino_scopes` + `rhino_default_scope`; camelCase→underscored; unknown → 403; `index`/`trashed` only, `show` stays unscoped) | `query_builder.rb`, `concerns/has_rhino.rb`, `resources_controller.rb`, `scope_not_allowed_error.rb` |
+| 30 | **Configurable Route Key** (`rhino_route_key :hash_id` per model or global `config.route_key`; resolves model → global → primary key; member-endpoint URL lookup only — payload FKs, nested-operation ids and audit references stay PK-based; route key is always kept in whitelisted/sparse responses) | `concerns/has_rhino.rb`, `configuration.rb`, `resources_controller.rb`, `hidable_columns.rb`, `query_builder.rb` |
 
 ## Running Tests
 

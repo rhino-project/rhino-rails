@@ -67,6 +67,15 @@ class RhinoModel < Rhino::RhinoModel
   # rhino_search  :title, :content, :excerpt
 
   # -----------------------------------------------------------------
+  # Route Key
+  # -----------------------------------------------------------------
+  #
+  # Match the :id URL segment against a column other than the primary key
+  # on member endpoints (show/update/destroy/restore/force-delete):
+  #
+  # rhino_route_key :hash_id   # GET /api/jobs/{hash_id}
+
+  # -----------------------------------------------------------------
   # Pagination
   # -----------------------------------------------------------------
   #

@@ -65,7 +65,8 @@ module Rhino
         warnings.concat(perm_result[:warnings])
 
         # Options
-        errors.concat(validate_options(blueprint[:options]))
+        errors.concat(validate_options(blueprint[:options], column_names))
+        warnings.concat(route_key_warnings(blueprint[:options], blueprint[:columns]))
 
         # Relationships
         errors.concat(validate_relationships(blueprint[:relationships]))
@@ -156,8 +157,9 @@ module Rhino
         { errors: errors, warnings: warnings }
       end
 
-      # Validate options.
-      def validate_options(options)
+      # Validate options. When +column_names+ is provided, also validates that
+      # a configured route_key references a declared column (or 'id').
+      def validate_options(options, column_names = nil)
         errors = []
 
         if options[:except_actions]
@@ -166,6 +168,11 @@ module Rhino
               errors << "Invalid action '#{action}' in except_actions"
             end
           end
+        end
+
+        route_key = options[:route_key]
+        if route_key && column_names && !(["id"] + column_names).include?(route_key.to_s)
+          errors << "route_key '#{route_key}' does not match any declared column"
         end
 
         errors
@@ -191,6 +198,21 @@ module Rhino
         end
 
         errors
+      end
+
+      # Warn when the route_key column is not marked unique — non-unique route
+      # keys make member-endpoint lookups ambiguous.
+      def route_key_warnings(options, columns)
+        warnings = []
+        route_key = options[:route_key]
+        return warnings unless route_key
+
+        column = columns.find { |c| c[:name] == route_key.to_s }
+        if column && !column[:unique]
+          warnings << "route_key column '#{route_key}' is not marked unique — member lookups may be ambiguous"
+        end
+
+        warnings
       end
 
       private

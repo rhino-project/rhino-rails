@@ -101,6 +101,21 @@ RSpec.describe Rhino::Commands::BlueprintCommand do
       expect(content).to include("Rhino::HasAuditTrail")
     end
 
+    it "emits rhino_route_key when route_key option is set" do
+      blueprint[:options][:route_key] = "hash_id"
+      path = command.send(:generate_model, blueprint, false)
+
+      content = File.read(File.join(tmp_dir, path))
+      expect(content).to include("rhino_route_key :hash_id")
+    end
+
+    it "does not emit rhino_route_key when route_key option is absent" do
+      path = command.send(:generate_model, blueprint, false)
+
+      content = File.read(File.join(tmp_dir, path))
+      expect(content).not_to include("rhino_route_key")
+    end
+
     it "generates validations for string columns" do
       path = command.send(:generate_model, blueprint, false)
 

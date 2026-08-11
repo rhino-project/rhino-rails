@@ -278,6 +278,7 @@ module Rhino
         content += "  rhino_sorts #{sort_cols.map { |c| ":#{c}" }.join(', ')}\n" unless sort_cols.empty?
         content += "  rhino_fields #{field_cols.map { |c| ":#{c}" }.join(', ')}\n" unless field_cols.empty?
         content += "  rhino_includes #{include_cols.map { |c| ":#{c}" }.join(', ')}\n" unless include_cols.empty?
+        content += "  rhino_route_key :#{blueprint[:options][:route_key]}\n" if blueprint[:options][:route_key]
 
         # Validations
 

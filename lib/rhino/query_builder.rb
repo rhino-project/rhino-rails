@@ -232,6 +232,12 @@ module Rhino
       if valid_fields.any?
         # Always include the primary key
         valid_fields.unshift(model_class.primary_key) unless valid_fields.include?(model_class.primary_key)
+        # Also include the configured route key — sparse responses must stay
+        # routable. No-op in the default path (route key == primary key).
+        route_key = model_class.try(:rhino_resolved_route_key)
+        if route_key && route_key.to_s != model_class.primary_key.to_s && !valid_fields.include?(route_key.to_s)
+          valid_fields << route_key.to_s
+        end
         @scope = @scope.select(valid_fields.map { |f| "#{model_class.table_name}.#{f}" })
       end
     end

@@ -142,6 +142,28 @@ ActiveRecord::Schema.define do
     t.timestamps
   end
 
+  # Dedicated tables for the configurable route key feature (route_key_spec).
+  # Kept separate from posts/blogs so existing specs are untouched.
+  create_table :jobs, force: true do |t|
+    t.references :organization, foreign_key: true
+    t.string :hash_id
+    t.string :title
+    t.string :status
+    t.datetime :discarded_at
+    t.timestamps
+  end
+  add_index :jobs, :hash_id, unique: true
+  add_index :jobs, :discarded_at
+
+  create_table :tasks, force: true do |t|
+    t.references :organization, foreign_key: true
+    t.string :hash_id
+    t.string :title
+    t.datetime :discarded_at
+    t.timestamps
+  end
+  add_index :tasks, :hash_id, unique: true
+
   create_table :audit_logs, force: true do |t|
     t.string :auditable_type, null: false
     t.bigint :auditable_id, null: false
@@ -252,6 +274,38 @@ end
 class Comment < ActiveRecord::Base
   belongs_to :post
   belongs_to :user, optional: true
+end
+
+# Route-keyed model: member endpoints match :id against hash_id.
+class Job < ActiveRecord::Base
+  include Rhino::HasRhino
+  include Rhino::HasValidation
+  include Rhino::HidableColumns
+  include Rhino::HasAutoScope
+  include Discard::Model
+
+  belongs_to :organization, optional: true
+
+  rhino_route_key :hash_id
+  rhino_filters :status
+  rhino_sorts :title, :created_at
+  rhino_fields :id, :title, :status
+  rhino_search :title
+
+  validates :title, length: { maximum: 255 }, allow_nil: true
+end
+
+# No model-level route key: used to exercise the global Rhino.config.route_key
+# fallback and the untouched default (primary key) path.
+class Task < ActiveRecord::Base
+  include Rhino::HasRhino
+  include Rhino::HasValidation
+  include Rhino::HidableColumns
+  include Discard::Model
+
+  belongs_to :organization, optional: true
+
+  rhino_fields :id, :title
 end
 
 # --------------------------------------------------------------------------

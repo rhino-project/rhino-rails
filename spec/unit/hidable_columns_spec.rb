@@ -39,6 +39,14 @@ class HidablePostWithComputed < ActiveRecord::Base
   end
 end
 
+class RouteKeyedHidableJob < ActiveRecord::Base
+  include Rhino::HasRhino
+  include Rhino::HidableColumns
+  self.table_name = "jobs"
+
+  rhino_route_key :hash_id
+end
+
 # --------------------------------------------------------------------------
 # Test Policies
 # --------------------------------------------------------------------------
@@ -422,6 +430,28 @@ RSpec.describe Rhino::HidableColumns do
       expect(json).not_to have_key("content")
       expect(json).not_to have_key("status")
       expect(json).not_to have_key("blog_id")
+    end
+
+    it "never strips the configured route key from whitelisted responses" do
+      policy_class = Class.new(Rhino::ResourcePolicy) do
+        self.resource_slug = "jobs"
+
+        def permitted_attributes_for_show(user)
+          ['id', 'title']
+        end
+      end
+
+      allow(Pundit::PolicyFinder).to receive(:new).and_return(
+        double(policy: policy_class)
+      )
+
+      job = RouteKeyedHidableJob.create!(title: "Keyed", status: "open", hash_id: "hash-abc")
+      json = job.as_rhino_json
+
+      expect(json).to have_key("id")
+      expect(json).to have_key("title")
+      expect(json["hash_id"]).to eq("hash-abc") # route key survives the whitelist
+      expect(json).not_to have_key("status")
     end
   end
 end

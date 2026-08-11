@@ -41,6 +41,7 @@ Register a model, get a full REST API instantly.
 | 27 | **Postman Export** | Auto-generated Postman Collection v2.1 with all endpoints. |
 | 28 | **Blueprint System** | YAML-to-code generation for models, migrations, factories, policies, tests, and seeders. |
 | 29 | **Named Scopes** | `?scope=availableForDrivers` client-selectable scopes (whitelisted via `rhino_scopes`), plus a `rhino_default_scope` applied when none is requested. Unknown scopes return 403. Applies to `index`/`trashed` only. |
+| 30 | **Configurable Route Key** | Match the `:id` URL segment against any column (`rhino_route_key :hash_id` per model, or global `config.route_key`). Member endpoints only — payload FKs and nested-operation ids stay primary-key based. |
 
 ## Quick Start
 

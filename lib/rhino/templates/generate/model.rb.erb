@@ -27,6 +27,8 @@ class <%= name %> < Rhino::RhinoModel
 <% unless include_cols.empty? -%>
   rhino_includes <%= include_cols.map { |c| ":#{c}" }.join(", ") %>
 <% end -%>
+  # Match the :id URL segment against another column (default: primary key):
+  # rhino_route_key :hash_id
 
   # ---------------------------------------------------------------
   # Validation (ActiveModel — use allow_nil: true for all validators)

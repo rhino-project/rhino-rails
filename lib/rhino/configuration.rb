@@ -4,6 +4,11 @@ module Rhino
   class Configuration
     attr_accessor :models, :route_groups, :multi_tenant, :invitations, :nested, :test_framework,
                   :client_path, :mobile_path
+    # Global default route key: the column matched against the :id URL segment
+    # on member endpoints (show/update/destroy/restore/force_delete) for every
+    # model that does not declare its own +rhino_route_key+. Default nil =
+    # primary key (today's behavior, fully backward compatible).
+    attr_accessor :route_key
     attr_reader :auth
 
     def initialize
@@ -27,6 +32,7 @@ module Rhino
       @test_framework = "rspec"
       @client_path = nil
       @mobile_path = nil
+      @route_key = nil
     end
 
     # Auth configuration accessor. Merges supplied keys over defaults so a host

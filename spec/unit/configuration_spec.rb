@@ -13,6 +13,24 @@ RSpec.describe Rhino::Configuration do
       expect(config.invitations[:expires_days]).to eq(7)
       expect(config.nested[:max_operations]).to eq(50)
       expect(config.test_framework).to eq("rspec")
+      expect(config.route_key).to be_nil
+    end
+  end
+
+  describe "#route_key" do
+    it "defaults to nil" do
+      expect(config.route_key).to be_nil
+    end
+
+    it "is settable" do
+      config.route_key = "hash_id"
+      expect(config.route_key).to eq("hash_id")
+    end
+
+    it "is cleared by Rhino.reset_configuration!" do
+      Rhino.config.route_key = "hash_id"
+      Rhino.reset_configuration!
+      expect(Rhino.config.route_key).to be_nil
     end
   end
 

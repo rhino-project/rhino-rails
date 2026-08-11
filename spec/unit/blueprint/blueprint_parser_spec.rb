@@ -174,6 +174,23 @@ RSpec.describe Rhino::Blueprint::BlueprintParser do
       expect(bp[:options][:except_actions]).to eq([])
       expect(bp[:options][:pagination]).to be false
       expect(bp[:options][:per_page]).to eq(25)
+      expect(bp[:options][:route_key]).to be_nil
+    end
+
+    it "parses route_key option" do
+      path = write_tmp("route_keyed.yaml", <<~YAML)
+        model: Job
+        options:
+          route_key: hash_id
+        columns:
+          hash_id:
+            type: string
+            unique: true
+          title: string
+      YAML
+
+      bp = parser.parse_model(path)
+      expect(bp[:options][:route_key]).to eq("hash_id")
     end
 
     it "normalizes column defaults" do
