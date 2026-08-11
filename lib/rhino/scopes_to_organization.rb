@@ -30,9 +30,11 @@ module Rhino
         )
       end
 
-      # Check for scopeForOrganization
+      # Check for scopeForOrganization. Merge into the incoming relation instead
+      # of replacing it so upstream conditions (e.g. `.discarded` for
+      # restore/force-delete lookups) are preserved alongside the org filter.
       if model_class.respond_to?(:for_organization)
-        return model_class.for_organization(organization)
+        return relation.merge(model_class.for_organization(organization))
       end
 
       # Check for organization_id column
@@ -69,11 +71,16 @@ module Rhino
 
     def scope_through_relationship(relation, model_class, organization, relationship_path, strict: false)
       if relationship_path.include?(".")
-        # Nested path: 'post.blog' -> joins(post: :blog).where(organizations: { id: org.id })
+        # Nested path: 'post.blog' -> joins(post: { blog: :organization })
+        #                             .where(organizations: { id: org.id })
+        # The inject already folds every path segment (outermost first) around
+        # the trailing :organization association, so the chain is passed to
+        # joins as-is — re-wrapping it in parts.first would double-nest the
+        # first segment and raise ActiveRecord::ConfigurationError.
         parts = relationship_path.split(".")
         join_chain = parts.reverse.inject(:organization) { |inner, outer| { outer.to_sym => inner } }
 
-        relation.joins(join_chain.is_a?(Symbol) ? join_chain : parts.first.to_sym => join_chain)
+        relation.joins(join_chain)
                 .where(organizations: { id: organization.id })
       else
         # Single relationship

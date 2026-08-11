@@ -193,7 +193,7 @@ module Rhino
 
     # POST /api/{slug}/:id/restore
     def restore
-      record = find_by_route_key(model_class.discarded)
+      record = find_by_route_key(organization_scoped(model_class.discarded))
       authorize record, :restore?, policy_class: policy_for(record)
 
       record.undiscard!
@@ -204,7 +204,7 @@ module Rhino
 
     # DELETE /api/{slug}/:id/force-delete
     def force_delete
-      record = find_by_route_key(model_class.discarded)
+      record = find_by_route_key(organization_scoped(model_class.discarded))
       authorize record, :force_delete?, policy_class: policy_for(record)
 
       record.destroy!
@@ -487,14 +487,22 @@ module Rhino
     # ------------------------------------------------------------------
 
     def find_record
-      scope = model_class.all
+      find_by_route_key(organization_scoped(model_class.all))
+    end
 
+    # Apply organization scoping to +relation+ for member-endpoint lookups
+    # (show/update/destroy/restore/force_delete). Delegates to the same lenient
+    # (non-strict) mechanisms index uses — organization-is-self,
+    # for_organization, organization_id column, auto-detected belongs_to path
+    # (incl. nested) — so records with an indirect tenant chain cannot be
+    # fetched cross-tenant by id/route key. Without an org context
+    # (single-tenant apps / non-tenant route groups) the relation is returned
+    # unchanged, and models with no scoping mechanism stay reachable as before.
+    def organization_scoped(relation)
       org = current_organization
-      if org && model_class.column_names.include?("organization_id")
-        scope = scope.where(organization_id: org.id)
-      end
+      return relation unless org
 
-      find_by_route_key(scope)
+      Rhino::ScopesToOrganization.scope_to_organization(relation, model_class, org)
     end
 
     # Column matched against the :id URL segment. Resolution chain:
