@@ -59,6 +59,31 @@ module Rhino
       def rhino_additional_hidden(*columns)
         self.additional_hidden_columns = columns.map(&:to_s)
       end
+
+      # Override this method to declare COLLECTION-level computed attributes,
+      # served by <tt>GET /api/{resource}/computed?attributes=a,b</tt>.
+      #
+      # Each callable receives the fully scoped relation (organization scope,
+      # default/global scopes, <tt>?scope=</tt>, <tt>?filter[]=</tt> and
+      # <tt>?search=</tt> already applied) plus the current user, and is
+      # evaluated ONCE for the whole collection — not once per row. This is the
+      # cheap way to expose aggregates such as counts.
+      #
+      # Declaring at least one attribute here is what registers the
+      # <tt>/computed</tt> route for the model.
+      #
+      # @example
+      #   def self.rhino_collection_computed_attributes
+      #     {
+      #       'active_users_count' => ->(scope, _user) { scope.where(status: 'active').count },
+      #       'blocked_users_count' => ->(scope, _user) { scope.where(status: 'blocked').count }
+      #     }
+      #   end
+      #
+      # @return [Hash{String => #call}]
+      def rhino_collection_computed_attributes
+        {}
+      end
     end
 
     # Get the list of columns to hide for the current user.
@@ -84,7 +109,7 @@ module Rhino
     # to add computed/virtual attributes to the JSON response.
     #
     # @return [Hash]
-    def as_rhino_json
+    def as_rhino_json(computed_attributes: [])
       user = rhino_current_user
       hidden = hidden_columns_for(user)
       result = as_json(except: hidden)
@@ -92,6 +117,13 @@ module Rhino
       # Merge computed attributes from model BEFORE applying policy filtering
       computed = rhino_computed_attributes
       result.merge!(computed) if computed.is_a?(Hash) && computed.any?
+
+      # Merge the OPT-IN record-level computed attributes the client selected via
+      # ?computed_attributes=. Nothing here is evaluated unless it was asked for
+      # by name, so declaring an expensive attribute costs nothing on requests
+      # that don't want it. Merged before policy filtering, so the blacklist and
+      # whitelist below still govern them.
+      result.merge!(rhino_resolve_record_computed_attributes(computed_attributes, user))
 
       # Apply blacklist to the final hash (covers DB columns from as_json
       # overrides AND computed attributes from rhino_computed_attributes)
@@ -132,7 +164,61 @@ module Rhino
       {}
     end
 
+    # Override this method to declare OPT-IN record-level computed attributes.
+    #
+    # Unlike +rhino_computed_attributes+, nothing here is evaluated unless the
+    # client names it in <tt>?computed_attributes=a,b</tt> on index/show/trashed
+    # — so expensive per-row work is only paid for when it is actually wanted.
+    #
+    # Return a hash of attribute name => callable. The callable may accept
+    # zero, one (record) or two (record, user) arguments.
+    #
+    # @example
+    #   def rhino_record_computed_attributes
+    #     {
+    #       'open_tickets_count' => ->(record, _user) { record.tickets.where(closed_at: nil).count },
+    #       'full_name' => ->(record, _user) { "#{record.first_name} #{record.last_name}" }
+    #     }
+    #   end
+    #
+    # @return [Hash{String => #call}]
+    def rhino_record_computed_attributes
+      {}
+    end
+
     private
+
+    # Evaluate the selected opt-in record-level computed attributes.
+    #
+    # Names that are not declared are silently skipped — the controller has
+    # already rejected unknown/forbidden names with a 403, and a direct
+    # +as_rhino_json+ caller must not be able to force an arbitrary call.
+    def rhino_resolve_record_computed_attributes(names, user)
+      return {} if names.blank?
+
+      declared = rhino_record_computed_attributes
+      return {} unless declared.is_a?(Hash) && declared.any?
+
+      Array(names).each_with_object({}) do |name, memo|
+        key = name.to_s
+        next unless declared.key?(key)
+
+        memo[key] = rhino_call_computed(declared[key], self, user)
+      end
+    end
+
+    # Invoke a declared callable, tolerating lambdas of arity 0, 1 or 2.
+    # Ruby lambdas are strict about arity, so the arity is honoured rather than
+    # forcing every declaration to accept both arguments.
+    def rhino_call_computed(entry, record, user)
+      return entry unless entry.respond_to?(:call)
+
+      case entry.try(:arity)
+      when 0 then entry.call
+      when 1 then entry.call(record)
+      else entry.call(record, user)
+      end
+    end
 
     # Resolves the current user from RequestStore.
     # @return [Object, nil]

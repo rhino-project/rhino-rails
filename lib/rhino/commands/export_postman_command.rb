@@ -175,8 +175,24 @@ module Rhino
           allowed_fields: model_class.try(:allowed_fields) || [],
           allowed_includes: model_class.try(:allowed_includes) || [],
           allowed_search: model_class.try(:allowed_search) || [],
+          # Computed attributes: names only (the callables never leave the server).
+          collection_computed_attributes: computed_names(model_class.try(:rhino_collection_computed_attributes)),
+          record_computed_attributes: computed_names(record_computed_declaration(model_class)),
           default_sort: model_class.try(:default_sort_field)
         }
+      end
+
+      def computed_names(declared)
+        declared.is_a?(Hash) ? declared.keys.map(&:to_s) : []
+      end
+
+      # Instantiating is safe (no DB round trip) and is the only way to read an
+      # instance-level declaration; a model that cannot be instantiated simply
+      # exports no record-level examples.
+      def record_computed_declaration(model_class)
+        model_class.new.try(:rhino_record_computed_attributes)
+      rescue StandardError
+        {}
       end
 
       def build_action_folders(slug, meta, group_prefix)
@@ -189,6 +205,10 @@ module Rhino
         folders << { name: "Store", item: build_store_requests(base) } unless except.include?("store")
         folders << { name: "Update", item: build_update_requests(base) } unless except.include?("update")
         folders << { name: "Destroy", item: build_destroy_requests(base) } unless except.include?("destroy")
+
+        if Array(meta[:collection_computed_attributes]).any? && !except.include?("computed")
+          folders << { name: "Computed Attributes", item: build_computed_requests(base, meta) }
+        end
 
         if meta[:uses_soft_deletes]
           folders << { name: "Trashed", item: build_trashed_requests(base) } unless except.include?("trashed")
@@ -231,6 +251,11 @@ module Rhino
                                    { "fields[#{slug}]" => meta[:allowed_fields].first(5).join(",") }, headers)
         end
 
+        Array(meta[:record_computed_attributes]).each do |attribute|
+          requests << request_item("With computed attribute #{attribute}", "GET", base,
+                                   { computed_attributes: attribute }, headers)
+        end
+
         unless meta[:allowed_search].empty?
           requests << request_item("Search", "GET", base, { search: "example" }, headers)
         end
@@ -247,6 +272,11 @@ module Rhino
 
         unless meta[:allowed_includes].empty?
           requests << request_item("Show with include", "GET", path, { include: meta[:allowed_includes].first.to_s }, headers)
+        end
+
+        Array(meta[:record_computed_attributes]).each do |attribute|
+          requests << request_item("Show with computed attribute #{attribute}", "GET", path,
+                                   { computed_attributes: attribute }, headers)
         end
 
         requests
@@ -266,6 +296,26 @@ module Rhino
       def build_destroy_requests(base)
         path = "#{base}/{{modelId}}"
         [request_item("Delete by ID", "DELETE", path, {}, default_headers)]
+      end
+
+      # Requests for GET {resource}/computed — the collection-level aggregates.
+      def build_computed_requests(base, meta)
+        headers = default_headers
+        path = "#{base}/computed"
+        attributes = Array(meta[:collection_computed_attributes])
+
+        requests = [request_item("All computed attributes", "GET", path, {}, headers)]
+
+        attributes.each do |attribute|
+          requests << request_item("Computed: #{attribute}", "GET", path, { attributes: attribute }, headers)
+        end
+
+        if attributes.size > 1
+          requests << request_item("Computed: multiple attributes", "GET", path,
+                                   { attributes: attributes.join(",") }, headers)
+        end
+
+        requests
       end
 
       def build_trashed_requests(base)

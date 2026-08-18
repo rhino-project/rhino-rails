@@ -33,6 +33,17 @@ module Rhino
       self
     end
 
+    # Apply only the modifications that define WHICH rows are in the set:
+    # named scope, filters and search. Sorting, sparse fieldsets, includes and
+    # pagination are irrelevant to an aggregate over the collection and are
+    # deliberately skipped — a `select` in particular would break `count`.
+    def build_for_computed
+      apply_named_scope if @named_scopes
+      apply_filters
+      apply_search
+      self
+    end
+
     # Get the final ActiveRecord relation.
     def to_scope
       @scope

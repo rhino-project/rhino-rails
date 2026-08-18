@@ -187,6 +187,14 @@ module Rhino
 
                 except_actions = model_class.try(:rhino_except_actions_list) || []
 
+                # The /computed endpoint exists only for models that actually
+                # declare collection-level computed attributes. Models that
+                # don't are byte-for-byte unchanged — in particular
+                # `/{slug}/computed` keeps resolving to show() for a record
+                # whose route key is literally "computed".
+                declared_computed = model_class.try(:rhino_collection_computed_attributes)
+                has_computed = declared_computed.is_a?(Hash) && declared_computed.any?
+
                 route_prefix = [group_prefix, slug.to_s].reject(&:blank?).join("/")
 
                 # Each model's CRUD routes live inside a path scope. When the
@@ -200,6 +208,11 @@ module Rhino
 
                   unless except_actions.include?("store")
                     post "/", to: "rhino/resources#store", as: "rhino_#{group_name}_#{slug}_store"
+                  end
+
+                  # Registered BEFORE the :id routes so the literal segment wins.
+                  if has_computed && !except_actions.include?("computed")
+                    get "computed", to: "rhino/resources#computed", as: "rhino_#{group_name}_#{slug}_computed"
                   end
 
                   if model_class.try(:uses_soft_deletes?)

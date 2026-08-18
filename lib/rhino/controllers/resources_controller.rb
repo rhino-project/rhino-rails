@@ -42,6 +42,9 @@ module Rhino
     def index
       authorize model_class, :index?, policy_class: policy_for(model_class)
 
+      computed = resolve_requested_computed_attributes
+      return if performed?
+
       builder = QueryBuilder.new(model_class, params: params, named_scopes: true)
       apply_organization_scope(builder)
       builder.build
@@ -52,9 +55,9 @@ module Rhino
       if per_page.present? || pagination_enabled
         result = builder.paginate
         set_pagination_headers(result[:pagination])
-        render json: { data: serialize_collection(result[:items]) }
+        render json: { data: serialize_collection(result[:items], computed) }
       else
-        render json: { data: serialize_collection(builder.to_scope) }
+        render json: { data: serialize_collection(builder.to_scope, computed) }
       end
     end
 
@@ -98,6 +101,9 @@ module Rhino
       record = find_record
       authorize record, :show?, policy_class: policy_for(record)
 
+      computed = resolve_requested_computed_attributes
+      return if performed?
+
       # Apply includes if requested
       if params[:include].present?
         auth_response = authorize_includes
@@ -111,7 +117,7 @@ module Rhino
         record = builder.to_scope.first!
       end
 
-      render json: serialize_record(record)
+      render json: serialize_record(record, computed)
     end
 
     # PUT /api/{slug}/:id
@@ -175,6 +181,9 @@ module Rhino
     def trashed
       authorize model_class, :view_trashed?, policy_class: policy_for(model_class)
 
+      computed = resolve_requested_computed_attributes
+      return if performed?
+
       builder = QueryBuilder.new(model_class.discarded, params: params, named_scopes: true)
       apply_organization_scope(builder)
       builder.build
@@ -185,10 +194,47 @@ module Rhino
       if per_page.present? || pagination_enabled
         result = builder.paginate
         set_pagination_headers(result[:pagination])
-        render json: { data: serialize_collection(result[:items]) }
+        render json: { data: serialize_collection(result[:items], computed) }
       else
-        render json: { data: serialize_collection(builder.to_scope) }
+        render json: { data: serialize_collection(builder.to_scope, computed) }
       end
+    end
+
+    # GET /api/{slug}/computed?attributes=a,b
+    #
+    # Collection-level computed attributes: each declared callable is evaluated
+    # ONCE over the whole (scoped + filtered) relation instead of once per row,
+    # which is what makes aggregates such as `active_users_count` cheap.
+    #
+    # The relation handed to each callable has the organization scope, the
+    # model's default scopes, `?scope=`, `?filter[]=` and `?search=` already
+    # applied — so the numbers describe exactly the set `index` would have
+    # listed. Sorting, sparse fieldsets, includes and pagination are
+    # deliberately NOT applied.
+    #
+    # Omitting `?attributes=` returns every declared attribute the policy allows.
+    def computed
+      authorize model_class, :index?, policy_class: policy_for(model_class)
+
+      declared = collection_computed_attributes
+      names = resolve_requested_collection_attributes(declared)
+      return if performed?
+
+      builder = QueryBuilder.new(model_class, params: params, named_scopes: true)
+      apply_organization_scope(builder)
+      builder.build_for_computed
+
+      scope = builder.to_scope
+      user = current_user
+
+      data = names.each_with_object({}) do |name, memo|
+        # Each attribute gets the base relation; ActiveRecord relations are
+        # immutable under chaining, so one callable's constraints can never
+        # leak into the next one's result.
+        memo[name] = call_computed_attribute(declared[name], scope, user)
+      end
+
+      render json: { data: data }
     end
 
     # POST /api/{slug}/:id/restore
@@ -599,16 +645,130 @@ module Rhino
     # Serialization
     # ------------------------------------------------------------------
 
-    def serialize_record(record)
+    # ------------------------------------------------------------------
+    # Computed attributes
+    # ------------------------------------------------------------------
+
+    # The model's declared collection-level computed attributes (name => callable).
+    def collection_computed_attributes
+      declared = model_class.try(:rhino_collection_computed_attributes)
+      declared.is_a?(Hash) ? declared.transform_keys(&:to_s) : {}
+    end
+
+    # Parse and authorize `?attributes=a,b` for the /computed endpoint.
+    #
+    # Renders a 403 and returns [] on a bad/denied name. An undeclared name and
+    # a policy-denied name produce the SAME error, so the endpoint never reveals
+    # which attributes a model declares.
+    def resolve_requested_collection_attributes(declared)
+      raw = params[:attributes]
+
+      # Reject non-scalar input (?attributes[]=x) before any lookup.
+      if raw.present? && !raw.is_a?(String)
+        render json: { message: "Computed attributes are not allowed" }, status: :forbidden
+        return []
+      end
+
+      user = current_user
+
+      if raw.blank?
+        # No selection: every declared attribute the policy allows.
+        return declared.keys.select { |name| computed_attribute_allowed?(name, user) }
+      end
+
+      names = parse_attribute_list(raw)
+
+      names.each do |name|
+        next if declared.key?(name) && computed_attribute_allowed?(name, user)
+
+        render json: { message: "Computed attribute '#{name}' is not allowed" }, status: :forbidden
+        return []
+      end
+
+      names
+    end
+
+    # Parse and authorize `?computed_attributes=a,b` for index/show/trashed —
+    # the OPT-IN record-level computed attributes. Absent or blank means "none",
+    # which is byte-for-byte the pre-feature behavior.
+    def resolve_requested_computed_attributes
+      raw = params[:computed_attributes]
+      return [] if raw.nil? || raw == ""
+
+      unless raw.is_a?(String)
+        render json: { message: "Computed attributes are not allowed" }, status: :forbidden
+        return []
+      end
+
+      names = parse_attribute_list(raw)
+      return [] if names.empty?
+
+      declared = model_class.new.try(:rhino_record_computed_attributes)
+      declared = declared.is_a?(Hash) ? declared.transform_keys(&:to_s) : {}
+
+      user = current_user
+
+      names.each do |name|
+        next if declared.key?(name) && computed_attribute_allowed?(name, user)
+
+        render json: { message: "Computed attribute '#{name}' is not allowed" }, status: :forbidden
+        return []
+      end
+
+      names
+    end
+
+    # Split a comma-separated attribute list, dropping blanks and duplicates.
+    def parse_attribute_list(raw)
+      raw.to_s.split(",").map(&:strip).reject(&:empty?).uniq
+    end
+
+    # Whether the policy lets this user see a computed attribute.
+    #
+    # Computed attributes go through the SAME gate as columns:
+    # +hidden_attributes_for_show+ blacklists, and +permitted_attributes_for_show+
+    # whitelists unless it returns the ['*'] default.
+    def computed_attribute_allowed?(name, user)
+      policy = policy_for(model_class).new(user, model_class)
+
+      if policy.respond_to?(:hidden_attributes_for_show)
+        hidden = Array(policy.hidden_attributes_for_show(user)).map(&:to_s)
+        return false if hidden.include?(name)
+      end
+
+      return true unless policy.respond_to?(:permitted_attributes_for_show)
+
+      permitted = policy.permitted_attributes_for_show(user)
+      return true if permitted.nil? || permitted == ["*"]
+
+      Array(permitted).map(&:to_s).include?(name)
+    rescue StandardError
+      # Policy resolution failed — serialization applies the same filters again
+      # downstream, so nothing can leak through this fallback.
+      true
+    end
+
+    # Invoke a declared callable, tolerating lambdas of arity 0, 1 or 2.
+    def call_computed_attribute(entry, scope, user)
+      return entry unless entry.respond_to?(:call)
+
+      case entry.try(:arity)
+      when 0 then entry.call
+      when 1 then entry.call(scope)
+      else entry.call(scope, user)
+      end
+    end
+
+    def serialize_record(record, computed_attributes = [])
       if record.respond_to?(:as_rhino_json)
-        record.as_rhino_json
+        record.as_rhino_json(computed_attributes: computed_attributes)
       else
         record.as_json
       end
     end
 
-    def serialize_collection(records)
-      records.map { |r| serialize_record(r) }
+    def serialize_collection(records, computed_attributes = [])
+      records.map { |r| serialize_record(r, computed_attributes) }
     end
 
     # ------------------------------------------------------------------

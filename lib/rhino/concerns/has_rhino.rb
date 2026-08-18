@@ -101,6 +101,9 @@ module Rhino
         self.rhino_middleware_actions_map = actions_hash.transform_keys(&:to_s)
       end
 
+      # CRUD actions to exclude from route registration.
+      # Valid values: :index, :show, :store, :update, :destroy, :trashed,
+      # :restore, :forceDelete, :computed.
       def rhino_except_actions(*actions)
         self.rhino_except_actions_list = actions.map(&:to_s)
       end
