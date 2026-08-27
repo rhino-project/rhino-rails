@@ -742,6 +742,137 @@ RSpec.describe "Rhino resource-scope resolver (Rhino.query / for_user)" do
       end
     end
 
+    describe "Rhino.in_route_group (jobs, rake tasks, console)" do
+      it "lets a job query across organizations by naming a non-tenant group" do
+        create_scoped_post(org_a, title: "A1")
+        create_scoped_post(org_b, title: "B1")
+
+        without_request_org do
+          expect(Rhino.in_route_group(:admin).query(ScopedPost).pluck(:title).sort).to eq(%w[A1 B1])
+        end
+      end
+
+      it "composes with for_user and keeps the user-aware auto-scope" do
+        user = create_user
+        other = create_user
+        without_request_org do
+          OwnedPost.create!(title: "Mine A", organization_id: org_a.id, user_id: user.id)
+          OwnedPost.create!(title: "Mine B", organization_id: org_b.id, user_id: user.id)
+          OwnedPost.create!(title: "Theirs", organization_id: org_a.id, user_id: other.id)
+        end
+
+        without_request_org do
+          titles = Rhino.for_user(user).in_route_group(:admin).query(OwnedPost).pluck(:title).sort
+          expect(titles).to eq(["Mine A", "Mine B"])
+        end
+      end
+
+      it "builds the same context in either order" do
+        create_scoped_post(org_a, title: "A1")
+        create_scoped_post(org_b, title: "B1")
+        user = create_user
+
+        without_request_org do
+          expect(Rhino.in_route_group(:admin).for_user(user).query(ScopedPost).count).to eq(2)
+        end
+      end
+
+      it "applies a whitelisted named scope" do
+        create_scoped_post(org_a, title: "APub", is_published: true)
+        create_scoped_post(org_a, title: "ADraft", is_published: false)
+        create_scoped_post(org_b, title: "BPub", is_published: true)
+
+        without_request_org do
+          titles = Rhino.in_route_group(:admin).scoped_query(ScopedPost, "published").pluck(:title).sort
+          expect(titles).to eq(%w[APub BPub])
+        end
+      end
+
+      it "covers ambient queries inside run" do
+        create_scoped_post(org_a, title: "A1")
+        create_scoped_post(org_b, title: "B1")
+
+        without_request_org do
+          count = Rhino.in_route_group(:admin).run { Rhino.query(ScopedPost).count }
+          expect(count).to eq(2)
+        end
+      end
+
+      it "still fails closed when the named group is a tenant group" do
+        without_request_org do
+          expect { Rhino.in_route_group(:tenant).query(ScopedPost) }
+            .to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+
+      it "still fails closed when the named group does not exist" do
+        without_request_org do
+          expect { Rhino.in_route_group(:nope).query(ScopedPost) }
+            .to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+
+      it "still isolates when an explicit organization is also passed" do
+        create_scoped_post(org_a, title: "A1")
+        create_scoped_post(org_b, title: "B1")
+        user = create_user
+
+        without_request_org do
+          rel = Rhino.for_user(user).in_route_group(:admin).in_organization(org_a).query(ScopedPost)
+          expect(rel.pluck(:title)).to eq(["A1"])
+        end
+      end
+
+      it "does not leak into a later ambient query" do
+        create_scoped_post(org_a, title: "A1")
+
+        without_request_org do
+          Rhino.in_route_group(:admin).query(ScopedPost).count
+
+          expect(Rhino::Context.route_group).to be_nil
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+
+      it "does not leak out of run" do
+        without_request_org do
+          Rhino.in_route_group(:admin).run { Rhino.query(ScopedPost).count }
+
+          expect(Rhino::Context.route_group).to be_nil
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+
+      it "adds to the request's group without erasing it" do
+        create_scoped_post(org_a, title: "A1")
+        create_scoped_post(org_b, title: "B1")
+        user = create_user
+
+        without_request_org do
+          in_route_group("admin") do
+            # A bare for_user keeps the non-tenant group the request is served by.
+            expect(Rhino.for_user(user).query(ScopedPost).count).to eq(2)
+          end
+
+          in_route_group("tenant") do
+            # ...and cannot manufacture one inside a tenant request.
+            expect { Rhino.for_user(user).query(ScopedPost) }
+              .to raise_error(Rhino::MissingTenantContext)
+          end
+        end
+      end
+
+      it "restores an outer request group after the explicit context" do
+        without_request_org do
+          in_route_group("tenant") do
+            Rhino.in_route_group(:admin).run { Rhino.query(ScopedPost).count }
+
+            expect(Rhino::Context.route_group).to eq("tenant")
+          end
+        end
+      end
+    end
+
     describe "Rhino::Context.route_group" do
       it "reads the group from RequestStore and treats blank as absent" do
         RequestStore.store[:rhino_route_group] = "admin"

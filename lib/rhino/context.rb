@@ -30,26 +30,37 @@ module Rhino
       end
     end
 
-    # The route group serving the current request, as stashed into RequestStore
-    # by Rhino's own controllers and by Rhino::RouteGroupContext in custom ones.
-    # Nil outside a request or when the route carries no group.
+    # The active route group: the explicit override if one is in effect (set by
+    # Rhino.in_route_group), else the group stashed into RequestStore by Rhino's
+    # own controllers and by Rhino::RouteGroupContext in custom ones.
+    #
+    # Unlike user/organization, an override never *erases* the request's group —
+    # +with+ only installs a non-nil one — so Rhino.for_user(u).query(M) inside a
+    # non-tenant request keeps that request's group.
     def route_group
-      return nil unless defined?(RequestStore)
+      value = store[:rhino_route_group]
+      value = RequestStore.store[:rhino_route_group] if value.nil? && defined?(RequestStore)
 
-      value = RequestStore.store[:rhino_route_group]
-      value.nil? || value.to_s.empty? ? nil : value
+      value.nil? || value.to_s.empty? ? nil : value.to_s
     end
 
     # Run +block+ with the given user/organization installed into RequestStore.
     # Snapshots the prior RequestStore user+org, sets the new ones, yields, and
     # restores the snapshot in an ensure. Returns the block's value.
-    def with(user:, organization:)
+    def with(user:, organization:, route_group: nil)
       return yield unless defined?(RequestStore)
 
       had_user = RequestStore.store.key?(:rhino_current_user)
       had_org  = RequestStore.store.key?(:rhino_organization)
       prev_user = RequestStore.store[:rhino_current_user]
       prev_org  = RequestStore.store[:rhino_organization]
+
+      # A route group is only ever ADDED, never cleared: with no explicit group
+      # the request's own one (if any) stays in effect.
+      had_group  = RequestStore.store.key?(:rhino_route_group)
+      prev_group = RequestStore.store[:rhino_route_group]
+      had_override_group  = store.key?(:rhino_route_group)
+      prev_override_group = store[:rhino_route_group]
 
       # Track the active override so Context.user/organization prefer it even when
       # the passed value is nil (distinguishing "explicitly nil" from "absent").
@@ -62,6 +73,11 @@ module Rhino
       RequestStore.store[:rhino_organization] = organization
       store[:rhino_current_user] = user
       store[:rhino_organization] = organization
+
+      if route_group
+        RequestStore.store[:rhino_route_group] = route_group.to_s
+        store[:rhino_route_group] = route_group.to_s
+      end
 
       begin
         yield
@@ -86,6 +102,20 @@ module Rhino
           store[:rhino_organization] = prev_override_org
         else
           store.delete(:rhino_organization)
+        end
+
+        if route_group
+          if had_group
+            RequestStore.store[:rhino_route_group] = prev_group
+          else
+            RequestStore.store.delete(:rhino_route_group)
+          end
+
+          if had_override_group
+            store[:rhino_route_group] = prev_override_group
+          else
+            store.delete(:rhino_route_group)
+          end
         end
       end
     end

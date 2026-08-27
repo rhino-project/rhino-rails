@@ -21,9 +21,10 @@ module Rhino
     #
     # Fail closed: an org-scopable model with no org context RAISES
     # Rhino::MissingTenantContext rather than returning an unscoped relation —
-    # unless the request is served by a route group declared non-tenant
-    # (`tenant: false`), where a query legitimately spans every organization. An
-    # explicit organization is always honored, in every group.
+    # unless the query belongs to a route group declared non-tenant
+    # (`tenant: false`), either because the request is served by that group or
+    # because the caller said so with Rhino.in_route_group(...). An explicit
+    # organization is always honored, in every group.
     def query(model_class)
       org = Rhino::Context.organization
 
@@ -51,6 +52,20 @@ module Rhino
     # Begin the fluent explicit builder for +user+.
     def for_user(user)
       Rhino::PendingScopedContext.new(user: user)
+    end
+
+    # Begin an explicit context that acts as the named route group, for use
+    # where no request resolves one — an Active Job, a rake task, the console,
+    # a test.
+    #
+    # The group's own configuration still decides the boundary: naming a group
+    # declared +tenant: false+ lets the query span every organization, while
+    # naming any other group keeps failing closed.
+    #
+    #   Rhino.in_route_group(:admin).query(Task)
+    #   Rhino.for_user(user).in_route_group(:admin).run { ... }
+    def in_route_group(route_group)
+      Rhino::PendingScopedContext.new(user: nil, route_group: route_group)
     end
 
     # The ambient context resolver.
@@ -89,13 +104,26 @@ module Rhino
   # Fluent explicit-context builder. Holds a user (and, once chained, an org) and
   # resolves queries with that context installed into RequestStore at build time.
   class PendingScopedContext
-    def initialize(user:, organization: nil)
+    def initialize(user:, organization: nil, route_group: nil)
       @user = user
       @organization = organization
+      @route_group = route_group
     end
 
     def in_organization(organization)
       @organization = organization
+      self
+    end
+
+    # Act as the named route group for this context (see Rhino.in_route_group).
+    def in_route_group(route_group)
+      @route_group = route_group
+      self
+    end
+
+    # Set the explicit user for this context.
+    def for_user(user)
+      @user = user
       self
     end
 
@@ -106,14 +134,14 @@ module Rhino
     # The org+user are baked into the returned relation — no stickiness, fully
     # isolated: a later Rhino.query with no context still fails closed.
     def query(model_class)
-      Rhino::Context.with(user: @user, organization: @organization) do
+      Rhino::Context.with(user: @user, organization: @organization, route_group: @route_group) do
         Rhino.query(model_class)
       end
     end
 
     # Build a fully-baked, named-scoped relation under this explicit context.
     def scoped_query(model_class, scope_name = nil)
-      Rhino::Context.with(user: @user, organization: @organization) do
+      Rhino::Context.with(user: @user, organization: @organization, route_group: @route_group) do
         Rhino.scoped_query(model_class, scope_name)
       end
     end
@@ -122,7 +150,7 @@ module Rhino
     # inside the block see the context; RequestStore is restored afterward.
     # Returns the block's value.
     def run(&block)
-      Rhino::Context.with(user: @user, organization: @organization, &block)
+      Rhino::Context.with(user: @user, organization: @organization, route_group: @route_group, &block)
     end
   end
 end

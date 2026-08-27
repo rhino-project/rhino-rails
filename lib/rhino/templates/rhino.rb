@@ -58,8 +58,14 @@ Rhino.configure do |config|
   # Custom (non-Rhino) controllers publish their group by including
   # Rhino::RouteGroupContext and declaring `rhino_route_group :admin`, or by
   # tagging the route with `defaults: { route_group: 'admin' }`. Outside a
-  # request (jobs, rake tasks) no group resolves and the resolver keeps failing
-  # closed.
+  # request (jobs, rake tasks, console) no group resolves, so the caller names
+  # the one it is acting as:
+  #
+  #   Rhino.in_route_group(:admin).query(Task)
+  #   Rhino.for_user(operator).in_route_group(:admin).run { ... }
+  #
+  # The group's own `tenant:` still decides: naming a tenant group there changes
+  # nothing, the query still fails closed.
 
   # config.route_group :default, prefix: '', middleware: [], models: :all
 
