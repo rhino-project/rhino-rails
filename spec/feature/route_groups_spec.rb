@@ -20,6 +20,38 @@ RSpec.describe "RouteGroups" do
       expect(Rhino.config.models_for_group(:default)).to contain_exactly(:posts, :blogs)
     end
 
+    it "defaults a group to having a tenant boundary" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.route_group :tenant, prefix: ":organization", models: :all
+      end
+
+      expect(Rhino.config.route_groups[:tenant][:tenant]).to be(true)
+      expect(Rhino.config.group_tenant?(:tenant)).to be(true)
+    end
+
+    it "records a group declared tenant: false" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.route_group :admin, prefix: "admin", tenant: false, models: :all
+      end
+
+      expect(Rhino.config.route_groups[:admin][:tenant]).to be(false)
+      expect(Rhino.config.group_tenant?(:admin)).to be(false)
+      expect(Rhino.config.group_tenant?("admin")).to be(false)
+    end
+
+    it "treats an unknown, nil or blank group as tenant-bounded" do
+      Rhino.reset_configuration!
+      Rhino.configure do |c|
+        c.route_group :admin, prefix: "admin", tenant: false, models: :all
+      end
+
+      expect(Rhino.config.group_tenant?(:nope)).to be(true)
+      expect(Rhino.config.group_tenant?(nil)).to be(true)
+      expect(Rhino.config.group_tenant?("")).to be(true)
+    end
+
     it "supports :all wildcard for models" do
       Rhino.reset_configuration!
       Rhino.configure do |c|

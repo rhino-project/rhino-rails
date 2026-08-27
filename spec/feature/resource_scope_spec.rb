@@ -2,6 +2,7 @@
 
 require "spec_helper"
 require "rhino/controllers/resources_controller"
+require "rhino/concerns/route_group_context"
 require "ostruct"
 
 # ---------------------------------------------------------------------------
@@ -600,4 +601,187 @@ RSpec.describe "Rhino resource-scope resolver (Rhino.query / for_user)" do
       expect(Rhino.context).to eq(Rhino::Context)
     end
   end
+  # ==================================================================
+  # 16. Non-tenant route groups (`tenant: false`)
+  # ==================================================================
+
+  describe "non-tenant route groups" do
+    # Declare a back-office group with no tenant boundary alongside the tenant
+    # group, exactly as a mixed app configures them.
+    def configure_groups(admin_tenant: false)
+      Rhino.config.route_group :tenant, prefix: ":organization", middleware: [], models: :all
+      Rhino.config.route_group :admin, prefix: "admin", tenant: admin_tenant, models: :all
+    end
+
+    # Serve the block as if the request had been routed into +name+, which is
+    # what Rhino's controllers and Rhino::RouteGroupContext publish.
+    def in_route_group(name)
+      prev = RequestStore.store[:rhino_route_group]
+      RequestStore.store[:rhino_route_group] = name
+      yield
+    ensure
+      RequestStore.store[:rhino_route_group] = prev
+    end
+
+    before { configure_groups }
+
+    it "returns every organization's rows for a column-scoped model without raising" do
+      create_scoped_post(org_a, title: "A1")
+      create_scoped_post(org_b, title: "B1")
+
+      without_request_org do
+        in_route_group("admin") do
+          expect(Rhino.query(ScopedPost).pluck(:title).sort).to eq(["A1", "B1"])
+        end
+      end
+    end
+
+    it "returns every organization's rows for a relationship-scoped model too" do
+      post_a = create_scoped_post(org_a, title: "A1")
+      post_b = create_scoped_post(org_b, title: "B1")
+      create_scoped_comment(post_a, body: "CA")
+      create_scoped_comment(post_b, body: "CB")
+
+      without_request_org do
+        in_route_group("admin") do
+          expect(Rhino.query(ScopedComment).pluck(:body).sort).to eq(%w[CA CB])
+        end
+      end
+    end
+
+    it "still applies the model's user-aware auto-scope" do
+      user = create_user
+      other = create_user
+      without_request_org do
+        OwnedPost.create!(title: "Mine A", organization_id: org_a.id, user_id: user.id)
+        OwnedPost.create!(title: "Mine B", organization_id: org_b.id, user_id: user.id)
+        OwnedPost.create!(title: "Theirs", organization_id: org_a.id, user_id: other.id)
+      end
+
+      without_request_org do
+        in_route_group("admin") do
+          titles = Rhino.for_user(user).query(OwnedPost).pluck(:title).sort
+          # No org filter (both orgs), but only this user's rows.
+          expect(titles).to eq(["Mine A", "Mine B"])
+        end
+      end
+    end
+
+    it "still applies a whitelisted named scope" do
+      create_scoped_post(org_a, title: "APub", is_published: true)
+      create_scoped_post(org_a, title: "ADraft", is_published: false)
+      create_scoped_post(org_b, title: "BPub", is_published: true)
+
+      without_request_org do
+        in_route_group("admin") do
+          expect(Rhino.scoped_query(ScopedPost, "published").pluck(:title).sort).to eq(%w[APub BPub])
+        end
+      end
+    end
+
+    it "still isolates when an explicit organization is passed" do
+      create_scoped_post(org_a, title: "A1")
+      create_scoped_post(org_b, title: "B1")
+      user = create_user
+
+      without_request_org do
+        in_route_group("admin") do
+          expect(Rhino.for_user(user).in_organization(org_a).query(ScopedPost).pluck(:title)).to eq(["A1"])
+        end
+      end
+    end
+
+    it "keeps failing closed in the tenant group of the same app" do
+      create_scoped_post(org_a, title: "A1")
+
+      without_request_org do
+        in_route_group("tenant") do
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+    end
+
+    it "keeps failing closed for a group that declares tenant: true" do
+      configure_groups(admin_tenant: true)
+
+      without_request_org do
+        in_route_group("admin") do
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+    end
+
+    it "keeps failing closed when the request carries no group" do
+      without_request_org do
+        in_route_group(nil) do
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+    end
+
+    it "keeps failing closed for a group that is not configured" do
+      without_request_org do
+        in_route_group("does-not-exist") do
+          expect { Rhino.query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+        end
+      end
+    end
+
+    it "keeps failing closed outside a request even when a non-tenant group exists" do
+      user = create_user
+
+      without_request_org do
+        expect { Rhino.for_user(user).query(ScopedPost) }.to raise_error(Rhino::MissingTenantContext)
+      end
+    end
+
+    it "names the escape hatch in the error message" do
+      without_request_org do
+        expect { Rhino.query(ScopedPost) }
+          .to raise_error(Rhino::MissingTenantContext, /tenant: false/)
+      end
+    end
+
+    describe "Rhino::Context.route_group" do
+      it "reads the group from RequestStore and treats blank as absent" do
+        RequestStore.store[:rhino_route_group] = "admin"
+        expect(Rhino::Context.route_group).to eq("admin")
+
+        RequestStore.store[:rhino_route_group] = ""
+        expect(Rhino::Context.route_group).to be_nil
+      end
+    end
+
+    describe "Rhino::RouteGroupContext" do
+      let(:controller_class) do
+        Class.new(ActionController::Base) do
+          include Rhino::RouteGroupContext
+          rhino_route_group :admin
+        end
+      end
+
+      it "publishes the declared group for the request" do
+        controller_class.new.send(:rhino_set_route_group)
+        expect(RequestStore.store[:rhino_route_group]).to eq("admin")
+      end
+
+      it "lets a subclass override the group its parent declared" do
+        subclass = Class.new(controller_class) { rhino_route_group :tenant }
+
+        subclass.new.send(:rhino_set_route_group)
+        expect(RequestStore.store[:rhino_route_group]).to eq("tenant")
+        # The parent's own declaration is untouched.
+        controller_class.new.send(:rhino_set_route_group)
+        expect(RequestStore.store[:rhino_route_group]).to eq("admin")
+      end
+
+      it "publishes nothing when no group is declared and there is no request" do
+        plain = Class.new(ActionController::Base) { include Rhino::RouteGroupContext }
+
+        plain.new.send(:rhino_set_route_group)
+        expect(RequestStore.store[:rhino_route_group]).to be_nil
+      end
+    end
+  end
+
 end

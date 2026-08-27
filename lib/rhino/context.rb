@@ -30,6 +30,16 @@ module Rhino
       end
     end
 
+    # The route group serving the current request, as stashed into RequestStore
+    # by Rhino's own controllers and by Rhino::RouteGroupContext in custom ones.
+    # Nil outside a request or when the route carries no group.
+    def route_group
+      return nil unless defined?(RequestStore)
+
+      value = RequestStore.store[:rhino_route_group]
+      value.nil? || value.to_s.empty? ? nil : value
+    end
+
     # Run +block+ with the given user/organization installed into RequestStore.
     # Snapshots the prior RequestStore user+org, sets the new ones, yields, and
     # restores the snapshot in an ensure. Returns the block's value.

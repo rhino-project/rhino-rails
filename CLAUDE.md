@@ -70,7 +70,7 @@ This library provides the following features. When modifying or extending any of
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `query_builder.rb`, `resources_controller.rb` |
 | 14 | **Multi-Tenancy** (org-based data isolation via RequestStore, auto-set org_id, default_scope) | `belongs_to_organization.rb`, `resolve_organization_from_route.rb` |
 | 15 | **Nested Ownership Auto-Detection** (walks belongs_to chains to find org) | `resources_controller.rb`, `has_validation.rb` |
-| 16 | **Route Groups** (:tenant, :public, custom groups with different middleware/auth) | `configuration.rb`, `routes.rb` |
+| 16 | **Route Groups** (:tenant, :public, custom groups with different middleware/auth; per-group `tenant: false` for back-office groups with no tenant boundary) | `configuration.rb` (`route_group tenant:`, `group_tenant?`), `routes.rb`, `query.rb`, `concerns/route_group_context.rb` |
 | 17 | **Soft Deletes** (Discard gem, trash/restore/force-delete endpoints + permissions) | `resources_controller.rb` |
 | 18 | **Audit Trail** (logs all CRUD events with old/new values, user, IP, org via RequestStore) | `has_audit_trail.rb`, `audit_log.rb` |
 | 19 | **Nested Operations** (POST /nested, atomic transactions, $N.field references) | `resources_controller.rb` |

@@ -44,6 +44,22 @@ Rhino.configure do |config|
   # the path prefix ':organization' does. Groups without a domain match any host.
   # config.route_group :admin, prefix: '', domain: 'admin.example.com', models: :all
   # config.route_group :tenant, prefix: '', domain: '{organization}.example.com', models: :all
+  #
+  # The optional `tenant:` keyword declares whether a group has a tenant
+  # boundary. It defaults to true: Rhino.query inside the group fails closed,
+  # raising Rhino::MissingTenantContext when an organization-scopable model is
+  # queried with no organization resolved. Pass `tenant: false` for a group that
+  # legitimately spans every organization — a back office whose operators see all
+  # tenants' rows. There, Rhino.query applies no organization filter and does not
+  # raise; the models' own scopes and the policies still apply, and an explicit
+  # Rhino.for_user(u).in_organization(org) still scopes.
+  # config.route_group :admin, prefix: 'admin', tenant: false, models: :all
+  #
+  # Custom (non-Rhino) controllers publish their group by including
+  # Rhino::RouteGroupContext and declaring `rhino_route_group :admin`, or by
+  # tagging the route with `defaults: { route_group: 'admin' }`. Outside a
+  # request (jobs, rake tasks) no group resolves and the resolver keeps failing
+  # closed.
 
   # config.route_group :default, prefix: '', middleware: [], models: :all
 

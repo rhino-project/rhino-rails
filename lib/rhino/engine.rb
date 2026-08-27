@@ -22,6 +22,7 @@ module Rhino
       require "rhino/concerns/hidable_columns"
       require "rhino/concerns/has_uuid"
       require "rhino/concerns/has_auto_scope"
+      require "rhino/concerns/route_group_context"
 
       # Policies
       require "rhino/policies/resource_policy"

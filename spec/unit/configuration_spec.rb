@@ -55,7 +55,8 @@ RSpec.describe Rhino::Configuration do
         middleware: ["SomeMiddleware"],
         models: :all,
         auth: false,
-        hooks: nil
+        hooks: nil,
+        tenant: true
       })
     end
 
@@ -67,7 +68,8 @@ RSpec.describe Rhino::Configuration do
         middleware: [],
         models: :all,
         auth: false,
-        hooks: nil
+        hooks: nil,
+        tenant: true
       })
     end
 

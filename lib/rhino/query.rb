@@ -20,7 +20,10 @@ module Rhino
     # (BelongsToOrganization / HasAutoScope read RequestStore at BUILD time).
     #
     # Fail closed: an org-scopable model with no org context RAISES
-    # Rhino::MissingTenantContext rather than returning an unscoped relation.
+    # Rhino::MissingTenantContext rather than returning an unscoped relation —
+    # unless the request is served by a route group declared non-tenant
+    # (`tenant: false`), where a query legitimately spans every organization. An
+    # explicit organization is always honored, in every group.
     def query(model_class)
       org = Rhino::Context.organization
 
@@ -28,9 +31,11 @@ module Rhino
       relation = model_class.all
 
       if Rhino::ScopesToOrganization.organization_scoped?(model_class)
-        raise Rhino::MissingTenantContext, model_class.name unless org
-
-        relation = Rhino::ScopesToOrganization.scope_to_organization(relation, model_class, org, strict: true)
+        if org
+          relation = Rhino::ScopesToOrganization.scope_to_organization(relation, model_class, org, strict: true)
+        elsif Rhino.config.group_tenant?(Rhino::Context.route_group)
+          raise Rhino::MissingTenantContext, model_class.name
+        end
       end
 
       relation

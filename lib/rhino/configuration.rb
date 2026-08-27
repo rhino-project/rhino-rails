@@ -62,7 +62,15 @@ module Rhino
     # captures the subdomain and feeds organization resolution exactly like the
     # path-prefix ":organization" does. Groups without a domain (nil/blank)
     # match any host (default, fully backward compatible).
-    def route_group(name, prefix: "", domain: nil, middleware: [], models: :all, auth: false, hooks: nil)
+    #
+    # The optional `tenant:` keyword declares whether the group has a tenant
+    # boundary. It defaults to true: Rhino.query inside the group fails closed,
+    # raising Rhino::MissingTenantContext when an organization-scopable model is
+    # queried with no organization resolved. Pass `tenant: false` for a group
+    # that legitimately spans every organization — a back office or admin group
+    # whose operators see all tenants' rows.
+    def route_group(name, prefix: "", domain: nil, middleware: [], models: :all, auth: false, hooks: nil,
+                    tenant: true)
       normalized_domain = domain.to_s.strip
       normalized_domain = nil if normalized_domain.empty?
 
@@ -72,8 +80,24 @@ module Rhino
         middleware: Array(middleware),
         models: models,
         auth: !!auth,
-        hooks: hooks
+        hooks: hooks,
+        tenant: tenant != false
       }
+    end
+
+    # Whether the named route group has a tenant boundary, i.e. whether
+    # Rhino.query must fail closed inside it. Only a group that explicitly
+    # declares `tenant: false` does not; every other answer — an unknown group,
+    # an untagged route, or no group at all (jobs, rake tasks, console) — is
+    # true, so the resolver keeps failing closed wherever the group is not
+    # provably non-tenant.
+    def group_tenant?(name)
+      return true if name.nil? || name.to_s.empty?
+
+      group = @route_groups[name.to_sym]
+      return true unless group
+
+      group.fetch(:tenant, true) != false
     end
 
     # Resolve a model class from its slug
