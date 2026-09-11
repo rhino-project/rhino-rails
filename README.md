@@ -16,7 +16,7 @@ Register a model, get a full REST API instantly.
 | 2 | **Authentication** | Login, logout, password recovery/reset, invitation-based registration. |
 | 3 | **Authorization & Policies** | Pundit-based permission checks (`{slug}.{action}`), wildcard support. |
 | 4 | **Role-Based Access Control** | Per-org roles via `user_roles` join table. |
-| 5 | **Attribute-Level Permissions** | Control which fields each role can read and write. |
+| 5 | **Attribute-Level Permissions** | Control which fields each role can read and write. A field a role cannot read is also refused as a `?filter[]` or a `?sort`, and skipped by `?search=`. |
 | 6 | **Validation** | Dual-layer: format rules + field presence. Supports role-keyed rules. |
 | 7 | **Cross-Tenant FK Validation** | `exists:` rules auto-scoped to current org, even through indirect FK relationships. |
 | 8 | **Filtering** | `?filter[field]=value` with AND/OR logic. |
@@ -40,7 +40,7 @@ Register a model, get a full REST API instantly.
 | 26 | **Generator CLI** | `rhino:install`, `rhino:generate`, `rhino:blueprint`, `rhino:export_postman`. |
 | 27 | **Postman Export** | Auto-generated Postman Collection v2.1 with all endpoints. |
 | 28 | **Blueprint System** | YAML-to-code generation for models, migrations, factories, policies, tests, and seeders. |
-| 29 | **Named Scopes** | `?scope=availableForDrivers` client-selectable scopes (whitelisted via `rhino_scopes`), plus a `rhino_default_scope` applied when none is requested. Unknown scopes return 403. Applies to `index`/`trashed` only. |
+| 29 | **Named Scopes** | `?scope=availableForDrivers` client-selectable scopes (whitelisted via `rhino_scopes`), plus a `rhino_default_scope` applied when none is requested. A scope may declare parameters the client fills in with `?scope[name][param]=value`, and up to three scopes may be combined. Unknown scopes, scopes the policy's `permitted_scopes` denies, and arguments that do not match the declared parameters return 403. Applies to `index`/`trashed` only. |
 | 30 | **Configurable Route Key** | Match the `:id` URL segment against any column (`rhino_route_key :hash_id` per model, or global `config.route_key`). Member endpoints only — payload FKs and nested-operation ids stay primary-key based. |
 
 ## Quick Start

@@ -12,6 +12,11 @@ module Rhino
   #   - Fields:       ?fields[posts]=id,title,status
   #   - Includes:     ?include=user,comments
   class QueryBuilder
+    # How many named scopes one request may combine. Scopes are arbitrary query
+    # fragments, so stacking many of them is a good way to build an accidental
+    # cross join; three covers every real listing.
+    MAX_SCOPES_PER_REQUEST = 3
+
     attr_reader :scope, :model_class, :params
 
     def initialize(model_class, params: {}, named_scopes: false)
@@ -83,31 +88,80 @@ module Rhino
     # +named_scopes: true+. `show` (including its ?include= build path) stays
     # unscoped so a record excluded by the default scope is still viewable.
     def apply_named_scope
-      requested = params[:scope].presence
-      name = requested ? requested.to_s.underscore : model_class.try(:default_rhino_scope)
-      return unless name
+      raw = params[:scope]
+      raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
 
-      allowed = model_class.try(:allowed_scopes) || {}
-      entry = allowed[name]
-      # The default scope is implicitly allowed when requested by name.
-      entry ||= name.to_sym if name == model_class.try(:default_rhino_scope)
+      declared = Rhino::ScopeSpec.normalize(model_class.try(:allowed_scopes))
+      default = model_class.try(:default_rhino_scope)
 
-      # Echo the client's wire name (not the underscored form) in the error.
-      raise Rhino::ScopeNotAllowedError, (requested ? requested.to_s : name) if entry.nil?
+      # Nothing requested: the model's default scope, which takes no arguments.
+      if raw.nil? || raw == "" || raw == {}
+        return if default.nil?
 
-      user = defined?(RequestStore) ? RequestStore.store[:rhino_current_user] : nil
+        return run_named_scope(default.to_s, declared[default.to_s] || {}, [])
+      end
+
+      requested =
+        if raw.is_a?(Hash)
+          raw
+        else
+          # Legacy form — ?scope=name, one scope, no arguments.
+          { raw.to_s => "" }
+        end
+
+      raise Rhino::ScopeNotAllowedError, "Too many scopes requested" if requested.size > MAX_SCOPES_PER_REQUEST
+
+      permitted = permitted_scope_names
+
+      requested.each do |wire_name, raw_arguments|
+        raise Rhino::ScopeNotAllowedError, wire_name.to_s if wire_name.to_s.empty?
+
+        name = wire_name.to_s.underscore
+        entry = declared[name]
+        # The default scope is implicitly allowed when requested by name.
+        entry ||= { target: name.to_sym, params: [], optional: [] } if name == default
+
+        # Echo the client's wire name (not the underscored form) in the error.
+        raise Rhino::ScopeNotAllowedError, wire_name.to_s if entry.nil?
+
+        if permitted != ["*"] && !permitted.include?(name)
+          raise Rhino::ScopeNotAllowedError, wire_name.to_s
+        end
+
+        run_named_scope(name, entry, Rhino::ScopeSpec.bind(wire_name.to_s, entry, raw_arguments))
+      end
+    end
+
+    # Run one already-authorized named scope, passing the bound arguments in the
+    # order the model declared them.
+    def run_named_scope(name, entry, args)
+      target = entry[:target] || name.to_sym
+      user = current_user
 
       @scope =
-        case entry
-        when Symbol
+        case target
+        when Symbol, String
           # Whitelisted AR scope. Client input never reaches public_send unless the
           # developer declared it via rhino_scopes. .merge composes with default_scopes.
-          @scope.merge(model_class.public_send(entry))
+          @scope.merge(model_class.public_send(target, *args))
         when Proc
-          entry.call(@scope, user)
+          target.call(@scope, user, *args)
         else
-          entry.new.apply(@scope) # Rhino::ResourceScope subclass (user/org/role helpers)
+          target.new.apply(@scope, *args) # Rhino::ResourceScope subclass (user/org/role helpers)
         end
+    end
+
+    # Scope names this user may select, or ["*"] when the policy does not
+    # restrict them (the default, and the behavior of every policy written
+    # before permitted_scopes existed).
+    def permitted_scope_names
+      policy = policy_instance
+      return ["*"] unless policy.respond_to?(:permitted_scopes)
+
+      permitted = policy.permitted_scopes(current_user)
+      return ["*"] unless permitted.is_a?(Array)
+
+      permitted.map(&:to_s)
     end
 
     # ------------------------------------------------------------------
@@ -124,6 +178,10 @@ module Rhino
       filter_params.each do |key, value|
         key = key.to_s
         next unless allowed.include?(key)
+
+        unless attribute_queryable?(key)
+          raise Rhino::QueryAttributeNotAllowedError, "Filter '#{key}' is not allowed"
+        end
 
         if value.to_s.include?(",")
           # Multiple values: OR condition
@@ -146,7 +204,9 @@ module Rhino
       default = model_class.try(:default_sort_field)
       return unless default
 
-      apply_sort_string(default)
+      # The default sort is the server's own choice, so it is not subject to the
+      # client allowlist or to the policy.
+      apply_sort_string(default, client_supplied: false)
     end
 
     def apply_sorts
@@ -156,7 +216,7 @@ module Rhino
       apply_sort_string(sort_param.to_s)
     end
 
-    def apply_sort_string(sort_string)
+    def apply_sort_string(sort_string, client_supplied: true)
       allowed = model_class.try(:allowed_sorts) || []
 
       sort_string.split(",").each do |field|
@@ -169,10 +229,81 @@ module Rhino
           direction = :asc
         end
 
-        next unless allowed.empty? || allowed.include?(column)
+        if client_supplied
+          # Deny by default: an undeclared column is ignored, never sorted by.
+          next unless allowed.include?(column)
+
+          unless attribute_queryable?(column)
+            raise Rhino::QueryAttributeNotAllowedError, "Sort '#{column}' is not allowed"
+          end
+        end
 
         @scope = @scope.order(column => direction)
       end
+    end
+
+    # ------------------------------------------------------------------
+    # Policy-aware attribute gate
+    # ------------------------------------------------------------------
+    #
+    # Attribute permissions used to apply only when serializing, so a hidden
+    # column stayed usable as a query predicate: ?filter[salary]=300000 never
+    # printed a salary but told the caller whose salary it was, and ?sort= leaked
+    # the whole ordering. Filters, sorts and search now go through the same gate
+    # as the response body.
+
+    def attribute_queryable?(name)
+      return true if name.nil? || name.to_s.empty?
+
+      attribute_path_allowed?(base_class, name.to_s)
+    end
+
+    def attribute_path_allowed?(klass, path)
+      if path.include?(".")
+        relation, rest = path.split(".", 2)
+        assoc = klass.respond_to?(:reflect_on_association) ? klass.reflect_on_association(relation.to_sym) : nil
+        # An unresolvable relation is left alone, so nothing that worked before
+        # starts failing for a reason nobody can find.
+        return true if assoc.nil?
+
+        begin
+          return attribute_path_allowed?(assoc.klass, rest)
+        rescue NoMethodError, NameError
+          return true
+        end
+      end
+
+      policy = policy_instance(klass)
+      user = current_user
+
+      if policy.respond_to?(:hidden_attributes_for_show)
+        return false if Array(policy.hidden_attributes_for_show(user)).map(&:to_s).include?(path)
+      end
+
+      return true unless policy.respond_to?(:permitted_attributes_for_show)
+
+      permitted = Array(policy.permitted_attributes_for_show(user)).map(&:to_s)
+      permitted == ["*"] || permitted.include?(path)
+    end
+
+    # The model class behind the builder: +model_class+ may be a relation, as it
+    # is for the trashed listing.
+    def base_class
+      @base_class ||= model_class.respond_to?(:klass) ? model_class.klass : model_class
+    end
+
+    def policy_instance(klass = base_class)
+      @policy_instances ||= {}
+      @policy_instances[klass] ||= begin
+        policy_class = "#{klass.name}Policy".safe_constantize || Rhino::ResourcePolicy
+        policy_class.new(current_user, klass)
+      rescue StandardError
+        Rhino::ResourcePolicy.new(current_user, klass)
+      end
+    end
+
+    def current_user
+      defined?(RequestStore) ? RequestStore.store[:rhino_current_user] : nil
     end
 
     # ------------------------------------------------------------------
@@ -183,8 +314,18 @@ module Rhino
       search_term = params[:search]
       return unless search_term.present?
 
-      columns = model_class.try(:allowed_search) || []
-      return if columns.empty?
+      declared = model_class.try(:allowed_search) || []
+      return if declared.empty?
+
+      columns = declared.select { |column| attribute_queryable?(column.to_s) }
+
+      # Every searchable column is hidden from this user. Searching a hidden
+      # column tells the caller what is in it, so return nothing rather than
+      # silently returning the whole list the client asked to narrow.
+      if columns.empty?
+        @scope = @scope.none
+        return
+      end
 
       term = "%#{search_term.to_s.downcase}%"
       conditions = []

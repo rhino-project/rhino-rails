@@ -119,6 +119,24 @@ module Rhino
       []
     end
 
+    # ------------------------------------------------------------------
+    # Scope Permissions
+    # ------------------------------------------------------------------
+
+    # Override to restrict which named scopes this user may select with ?scope=.
+    # Return ['*'] to allow every scope the model declares (default). The model's
+    # rhino_scopes declaration still applies: this can only narrow it.
+    #
+    # The model's rhino_default_scope is applied by the server when the client
+    # sends no scope at all, so it is not subject to this list. Requesting it by
+    # name is.
+    #
+    # @param user [Object, nil] The authenticated user
+    # @return [Array<String>]
+    def permitted_scopes(user)
+      ['*']
+    end
+
     # Override to whitelist which fields a user can submit on create.
     # Return ['*'] to allow all fields (default).
     #

@@ -45,8 +45,8 @@ module Rhino
     # Build a tenant-scoped relation and apply a whitelisted ?scope= named scope
     # on top of it. +scope_name+ is the wire name (camelCase accepted); nil falls
     # back to the model's rhino_default_scope.
-    def scoped_query(model_class, scope_name = nil)
-      apply_named_scope(query(model_class), model_class, scope_name)
+    def scoped_query(model_class, scope_name = nil, *args)
+      apply_named_scope(query(model_class), model_class, scope_name, *args)
     end
 
     # Begin the fluent explicit builder for +user+.
@@ -77,26 +77,29 @@ module Rhino
     # Shared by Rhino.scoped_query and PendingScopedContext#scoped_query. Uses the
     # same allowed_scopes / default_rhino_scope mechanism as the QueryBuilder.
     # @api private
-    def apply_named_scope(relation, model_class, scope_name = nil)
+    def apply_named_scope(relation, model_class, scope_name = nil, *args)
       requested = scope_name.to_s.presence
       name = requested ? requested.underscore : model_class.try(:default_rhino_scope)
       return relation unless name
 
-      allowed = model_class.try(:allowed_scopes) || {}
+      allowed = Rhino::ScopeSpec.normalize(model_class.try(:allowed_scopes))
       entry = allowed[name]
-      entry ||= name.to_sym if name == model_class.try(:default_rhino_scope)
+      entry ||= { target: name.to_sym, params: [], optional: [] } if name == model_class.try(:default_rhino_scope)
 
       raise Rhino::ScopeNotAllowedError, (requested || name) if entry.nil?
 
       user = defined?(RequestStore) ? RequestStore.store[:rhino_current_user] : nil
+      target = entry[:target] || name.to_sym
 
-      case entry
-      when Symbol
-        relation.merge(model_class.public_send(entry))
+      # Server-side caller: the policy gate belongs to the request path, and any
+      # arguments here come from application code, not from a client.
+      case target
+      when Symbol, String
+        relation.merge(model_class.public_send(target, *args))
       when Proc
-        entry.call(relation, user)
+        target.call(relation, user, *args)
       else
-        entry.new.apply(relation)
+        target.new.apply(relation, *args)
       end
     end
   end
@@ -140,9 +143,9 @@ module Rhino
     end
 
     # Build a fully-baked, named-scoped relation under this explicit context.
-    def scoped_query(model_class, scope_name = nil)
+    def scoped_query(model_class, scope_name = nil, *args)
       Rhino::Context.with(user: @user, organization: @organization, route_group: @route_group) do
-        Rhino.scoped_query(model_class, scope_name)
+        Rhino.scoped_query(model_class, scope_name, *args)
       end
     end
 

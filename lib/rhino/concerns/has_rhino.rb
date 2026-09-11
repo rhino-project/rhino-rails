@@ -52,6 +52,22 @@ module Rhino
       #   rhino_scopes :active, available_for_drivers: Scopes::AvailableForDriversScope
       # Bare symbols must name an existing ActiveRecord scope/class method on the model.
       # Hash values may be a Proc(relation, user) or a Rhino::ResourceScope subclass.
+      #
+      # A scope may also declare parameters the client fills in, in the order the
+      # scope takes them. A parameter listed under :optional may be left out.
+      #   rhino_scopes since:  { params: [:date] },
+      #                window: { params: %i[min max] },
+      #                titled: { params: %i[title status], optional: [:status] },
+      #                mine:   { params: [:status], with: ->(rel, user, status) { ... } }
+      #
+      # Queries:
+      #   GET /api/routes?scope=active
+      #   GET /api/routes?scope[since]=2026-01-01
+      #   GET /api/routes?scope[window][min]=1&scope[window][max]=9
+      #
+      # Up to three scopes may be combined in the bracket form, applied in the
+      # order the URL lists them. A scope with no declared parameters never
+      # receives client input: sending any is a 403.
       def rhino_scopes(*names, **named)
         merged = allowed_scopes.dup
         names.each { |n| merged[n.to_s] = n.to_sym }

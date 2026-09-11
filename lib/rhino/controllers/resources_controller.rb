@@ -17,7 +17,18 @@ module Rhino
     end
 
     rescue_from Rhino::ScopeNotAllowedError do |e|
-      render json: { message: "Scope '#{e.message}' is not allowed" }, status: :forbidden
+      # A message that already reads as a sentence is rendered as-is (the
+      # too-many-scopes case); a bare name becomes the standard refusal.
+      message = e.message.include?(" ") ? e.message : "Scope '#{e.message}' is not allowed"
+      render json: { message: message }, status: :forbidden
+    end
+
+    rescue_from Rhino::InvalidScopeArgumentsError do |e|
+      render json: { message: e.message }, status: :forbidden
+    end
+
+    rescue_from Rhino::QueryAttributeNotAllowedError do |e|
+      render json: { message: e.message }, status: :forbidden
     end
 
     # Cache for auto-detected organization paths (class-level, survives across requests)

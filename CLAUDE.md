@@ -59,12 +59,12 @@ This library provides the following features. When modifying or extending any of
 | 2 | **Authentication** (login, logout, password recovery/reset, invitation registration) | `auth_controller.rb` |
 | 3 | **Authorization & Policies** (Pundit, convention-based `{slug}.{action}` permissions, wildcards) | `resource_policy.rb`, `has_permissions.rb` |
 | 4 | **Role-Based Access Control** (per-org roles via user_roles pivot) | `has_permissions.rb` |
-| 5 | **Attribute-Level Permissions** (read/write field control per role) | `resource_policy.rb`, `hidable_columns.rb` |
+| 5 | **Attribute-Level Permissions** (read/write field control per role; the read gate also applies to `?filter[]`, `?sort` and `?search`) | `resource_policy.rb`, `hidable_columns.rb`, `query_builder.rb` (`attribute_queryable?`) |
 | 6 | **Validation** (ActiveModel validations with `allow_nil: true` convention) | `has_validation.rb` |
 | 7 | **Cross-Tenant FK Validation** (validates FK references belong to current org via DB introspection, even through indirect FK relationships) | `has_validation.rb` |
-| 8 | **Filtering** (`?filter[field]=value`, AND/OR logic, type coercion) | `query_builder.rb` |
-| 9 | **Sorting** (`?sort=-created_at,title`) | `query_builder.rb` |
-| 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships via joins) | `query_builder.rb` |
+| 8 | **Filtering** (`?filter[field]=value`, AND/OR logic, type coercion; 403 when the policy hides the attribute) | `query_builder.rb` |
+| 9 | **Sorting** (`?sort=-created_at,title`; deny by default — an empty `rhino_sorts` allows nothing; 403 when the policy hides the attribute, `rhino_default_sort` exempt) | `query_builder.rb` |
+| 10 | **Full-Text Search** (`?search=term`, dot-notation for relationships via joins; skips hidden columns, fails closed when all are hidden) | `query_builder.rb` |
 | 11 | **Pagination** (Pagy, header-based: X-Current-Page, X-Last-Page, X-Per-Page, X-Total) | `query_builder.rb`, `resources_controller.rb` |
 | 12 | **Field Selection** (`?fields[posts]=id,title`) | `query_builder.rb` |
 | 13 | **Eager Loading** (`?include=user,comments`, nested, Count/Exists suffixes, auth per include) | `query_builder.rb`, `resources_controller.rb` |
@@ -83,7 +83,7 @@ This library provides the following features. When modifying or extending any of
 | 26 | **Generator CLI** (`rhino:install`, `rhino:generate`, `rhino:blueprint`) | `commands/` |
 | 27 | **Postman Export** (auto-generated collection with all endpoints) | `commands/export_postman_command.rb` |
 | 28 | **Blueprint System** (YAML-to-code generation for models, policies, factories, tests, seeders) | `blueprint/` |
-| 29 | **Named Scopes** (`?scope=availableForDrivers` whitelisted via `rhino_scopes` + `rhino_default_scope`; camelCase→underscored; unknown → 403; `index`/`trashed` only, `show` stays unscoped) | `query_builder.rb`, `concerns/has_rhino.rb`, `resources_controller.rb`, `scope_not_allowed_error.rb` |
+| 29 | **Named Scopes** (`?scope=availableForDrivers`, or `?scope[name][param]=value` with parameters declared in `rhino_scopes`, up to 3 per request; whitelisted via `rhino_scopes` + `rhino_default_scope` + policy `permitted_scopes`; camelCase→underscored; unknown, denied or badly-argued → 403; `index`/`trashed` only, `show` stays unscoped) | `query_builder.rb`, `scope_spec.rb`, `concerns/has_rhino.rb`, `resources_controller.rb`, `scope_not_allowed_error.rb`, `invalid_scope_arguments_error.rb` |
 | 30 | **Configurable Route Key** (`rhino_route_key :hash_id` per model or global `config.route_key`; resolves model → global → primary key; member-endpoint URL lookup only — payload FKs, nested-operation ids and audit references stay PK-based; route key is always kept in whitelisted/sparse responses) | `concerns/has_rhino.rb`, `configuration.rb`, `resources_controller.rb`, `hidable_columns.rb`, `query_builder.rb` |
 
 ## Running Tests
