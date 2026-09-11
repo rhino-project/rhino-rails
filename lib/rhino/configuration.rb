@@ -9,6 +9,12 @@ module Rhino
     # model that does not declare its own +rhino_route_key+. Default nil =
     # primary key (today's behavior, fully backward compatible).
     attr_accessor :route_key
+    # How many client-selectable named scopes one request may combine with the
+    # bracket form (?scope[a]=&scope[b][x]=1). Each scope is an arbitrary query
+    # fragment that may add joins or subqueries, so the number is capped: a
+    # request over the cap is refused with 403 "Too many scopes requested".
+    # Default 3 — a base scope, a window, and one more predicate.
+    attr_reader :max_scopes_per_request
     attr_reader :auth
 
     def initialize
@@ -33,6 +39,14 @@ module Rhino
       @client_path = nil
       @mobile_path = nil
       @route_key = nil
+      @max_scopes_per_request = 3
+    end
+
+    # A non-numeric or non-positive value would lock every scope out of every
+    # request, so it falls back to the default instead.
+    def max_scopes_per_request=(value)
+      value = value.to_i if value.respond_to?(:to_i)
+      @max_scopes_per_request = value.is_a?(Integer) && value.positive? ? value : 3
     end
 
     # Auth configuration accessor. Merges supplied keys over defaults so a host

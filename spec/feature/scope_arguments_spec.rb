@@ -291,6 +291,37 @@ RSpec.describe "Named scope arguments (?scope[name][param]=)" do
     end
   end
 
+  describe "the scope cap" do
+    after { Rhino.config.max_scopes_per_request = 3 }
+
+    it "is configurable" do
+      Rhino.config.max_scopes_per_request = 2
+
+      ok = call_index(
+        { model_slug: "arg_scope_posts", scope: { "archived" => "", "titledLike" => "Al" } }, user
+      )
+      expect(ok.status).to eq(200)
+
+      over = call_index(
+        { model_slug: "arg_scope_posts",
+          scope: { "archived" => "", "titledLike" => "A", "publishedIs" => "true" } }, user
+      )
+      expect(over.status).to eq(403)
+      expect(over.body["message"]).to eq("Too many scopes requested")
+    end
+
+    it "falls back to the default when the value is nonsense" do
+      Rhino.config.max_scopes_per_request = 0
+
+      response = call_index(
+        { model_slug: "arg_scope_posts",
+          scope: { "archived" => "", "titledLike" => "A", "publishedIs" => "true" } }, user
+      )
+
+      expect(response.status).to eq(200)
+    end
+  end
+
   describe "permitted_scopes" do
     it "refuses a declared scope the policy does not permit" do
       response = call_index({ model_slug: "restricted_scope_posts", scope: { "titledLike" => "A" } }, user)

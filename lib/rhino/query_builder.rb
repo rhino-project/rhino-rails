@@ -12,10 +12,12 @@ module Rhino
   #   - Fields:       ?fields[posts]=id,title,status
   #   - Includes:     ?include=user,comments
   class QueryBuilder
-    # How many named scopes one request may combine. Scopes are arbitrary query
-    # fragments, so stacking many of them is a good way to build an accidental
-    # cross join; three covers every real listing.
-    MAX_SCOPES_PER_REQUEST = 3
+    # Fallback for how many named scopes one request may combine, used when no
+    # Rhino configuration is reachable. Apps set +config.max_scopes_per_request+.
+    #
+    # Scopes are arbitrary query fragments, so stacking many of them is a good
+    # way to build an accidental cross join; three covers every real listing.
+    DEFAULT_MAX_SCOPES_PER_REQUEST = 3
 
     attr_reader :scope, :model_class, :params
 
@@ -109,7 +111,7 @@ module Rhino
           { raw.to_s => "" }
         end
 
-      raise Rhino::ScopeNotAllowedError, "Too many scopes requested" if requested.size > MAX_SCOPES_PER_REQUEST
+      raise Rhino::ScopeNotAllowedError, "Too many scopes requested" if requested.size > max_scopes_per_request
 
       permitted = permitted_scope_names
 
@@ -130,6 +132,14 @@ module Rhino
 
         run_named_scope(name, entry, Rhino::ScopeSpec.bind(wire_name.to_s, entry, raw_arguments))
       end
+    end
+
+    # How many named scopes this app allows in one request.
+    def max_scopes_per_request
+      configured = Rhino.config.try(:max_scopes_per_request)
+      configured.is_a?(Integer) && configured.positive? ? configured : DEFAULT_MAX_SCOPES_PER_REQUEST
+    rescue StandardError
+      DEFAULT_MAX_SCOPES_PER_REQUEST
     end
 
     # Run one already-authorized named scope, passing the bound arguments in the
