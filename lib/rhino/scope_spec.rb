@@ -16,6 +16,11 @@ module Rhino
   # A scope with no declared parameters never receives arguments: sending any
   # is a 403, so a scope written without client input can never be handed some.
   module ScopeSpec
+    # The noun every scope-argument error message starts with. The binding
+    # algorithm itself lives in Rhino::ArgumentBinder and is shared with
+    # computed attributes; this constant is what keeps the scope wording its own.
+    SUBJECT = "Scope"
+
     module_function
 
     # Normalize a raw +allowed_scopes+ hash into
@@ -30,10 +35,10 @@ module Rhino
     def normalize_entry(name, value)
       if value.is_a?(Hash) || value.is_a?(ActiveSupport::HashWithIndifferentAccess)
         spec = value.symbolize_keys
-        params = Array(spec[:params]).map(&:to_s)
-        optional = Array(spec[:optional]).map(&:to_s) & params
 
-        { target: spec[:with] || name.to_sym, params: params, optional: optional }
+        Rhino::ArgumentBinder
+          .normalize_params(spec[:params], spec[:optional])
+          .merge(target: spec[:with] || name.to_sym)
       else
         { target: value, params: [], optional: [] }
       end
@@ -48,77 +53,33 @@ module Rhino
     #
     # Raises Rhino::InvalidScopeArgumentsError.
     def bind(name, spec, raw)
-      params = spec[:params]
-      given = normalize_raw_arguments(name, params, raw)
-
-      given.each_key do |key|
-        unless params.include?(key)
-          raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' does not accept parameter '#{key}'"
-        end
-      end
-
-      args = params.map do |param|
-        if given.key?(param)
-          coerce(given[param])
-        elsif spec[:optional].include?(param)
-          nil
-        else
-          raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' requires parameter '#{param}'"
-        end
-      end
-
-      # Drop trailing nils so an omitted optional parameter falls back to the
-      # default in the scope's own signature.
-      args.pop while args.any? && args.last.nil?
-      args
+      Rhino::ArgumentBinder.bind(
+        subject: SUBJECT,
+        name: name,
+        spec: spec,
+        raw: raw,
+        error_class: Rhino::InvalidScopeArgumentsError,
+        # Scope wire names are underscored (?scope[availableForDrivers]), and so
+        # are their parameter names.
+        underscore_keys: true
+      )
     end
 
     def normalize_raw_arguments(name, params, raw)
-      # ?scope[archived]= (or a bare ?scope[archived]): no arguments. A scope
-      # with required parameters still fails, in bind, naming them.
-      return {} if raw.nil? || raw == ""
-
-      raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
-
-      if raw.is_a?(Array)
-        # A positional list (scope[between][]=a) names nothing.
-        raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' requires named parameters"
-      end
-
-      unless raw.is_a?(Hash)
-        raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' does not accept arguments" if params.empty?
-
-        # A bare value binds to the single declared parameter. Two parameters can
-        # never be guessed at from one value.
-        if params.length > 1
-          raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' requires named parameters"
-        end
-
-        return { params.first => raw }
-      end
-
-      raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' does not accept arguments" if params.empty?
-
-      raw.each_with_object({}) do |(key, value), out|
-        unless value.is_a?(String) || value.is_a?(Numeric) || value.is_a?(TrueClass) ||
-               value.is_a?(FalseClass) || value.nil?
-          raise Rhino::InvalidScopeArgumentsError, "Scope '#{name}' requires named parameters"
-        end
-
-        out[key.to_s.underscore] = value
-      end
+      Rhino::ArgumentBinder.normalize_raw_arguments(
+        subject: SUBJECT,
+        name: name,
+        params: params,
+        raw: raw,
+        error_class: Rhino::InvalidScopeArgumentsError,
+        underscore_keys: true
+      )
     end
 
     # Query-string values always arrive as strings; hand scope bodies real
     # booleans so a check cannot be fooled by the string "false".
     def coerce(value)
-      return value unless value.is_a?(String)
-
-      case value.downcase
-      when "true" then true
-      when "false" then false
-      else value
-      end
+      Rhino::ArgumentBinder.coerce(value)
     end
   end
 end

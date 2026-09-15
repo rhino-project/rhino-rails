@@ -72,15 +72,27 @@ module Rhino
       # Declaring at least one attribute here is what registers the
       # <tt>/computed</tt> route for the model.
       #
+      # An attribute may also declare PARAMETERS the client supplies as
+      # <tt>?attributes[name][param]=value</tt>. Use the extended form — a hash
+      # carrying +params+ (and optionally +optional+ and +with+) — and the bound
+      # arguments are appended after +user+, in declared order. An attribute
+      # with a REQUIRED parameter is skipped by a bare <tt>GET /computed</tt>
+      # rather than 403'd, so adding one never breaks a client that asks for
+      # everything.
+      #
       # @example
       #   def self.rhino_collection_computed_attributes
       #     {
       #       'active_users_count' => ->(scope, _user) { scope.where(status: 'active').count },
-      #       'blocked_users_count' => ->(scope, _user) { scope.where(status: 'blocked').count }
+      #       'blocked_users_count' => ->(scope, _user) { scope.where(status: 'blocked').count },
+      #       'revenue' => {
+      #         params: %i[from to],
+      #         with: ->(scope, _user, from, to) { scope.where(created_at: from..to).sum(:total) }
+      #       }
       #     }
       #   end
       #
-      # @return [Hash{String => #call}]
+      # @return [Hash{String => Object}]
       def rhino_collection_computed_attributes
         {}
       end
@@ -108,8 +120,14 @@ module Rhino
     # Do NOT override this method. Override +rhino_computed_attributes+ instead
     # to add computed/virtual attributes to the JSON response.
     #
+    # @param computed_attributes [Array<String>] opt-in record-level computed
+    #   attributes to evaluate, selected via <tt>?computed_attributes=</tt>.
+    # @param computed_arguments [Hash{String => Array}] positional arguments per
+    #   attribute name. An attribute with required parameters and no entry here
+    #   is skipped rather than called with too few arguments, so an existing
+    #   direct caller that passes only names keeps working.
     # @return [Hash]
-    def as_rhino_json(computed_attributes: [])
+    def as_rhino_json(computed_attributes: [], computed_arguments: {})
       user = rhino_current_user
       hidden = hidden_columns_for(user)
       result = as_json(except: hidden)
@@ -123,7 +141,9 @@ module Rhino
       # by name, so declaring an expensive attribute costs nothing on requests
       # that don't want it. Merged before policy filtering, so the blacklist and
       # whitelist below still govern them.
-      result.merge!(rhino_resolve_record_computed_attributes(computed_attributes, user))
+      result.merge!(
+        rhino_resolve_record_computed_attributes(computed_attributes, user, computed_arguments)
+      )
 
       # Apply blacklist to the final hash (covers DB columns from as_json
       # overrides AND computed attributes from rhino_computed_attributes)
@@ -173,15 +193,27 @@ module Rhino
     # Return a hash of attribute name => callable. The callable may accept
     # zero, one (record) or two (record, user) arguments.
     #
+    # An attribute may also declare PARAMETERS the client supplies as
+    # <tt>?computed_attributes[name][param]=value</tt>. Use the extended form —
+    # a hash carrying +params+ (and optionally +optional+ and +with+) — and the
+    # bound arguments are appended after +user+, in declared order. A
+    # parameterised entry is always called as <tt>call(record, user, *args)</tt>.
+    # Any other declared value (a callable, a scalar, a plain array) keeps its
+    # current meaning.
+    #
     # @example
     #   def rhino_record_computed_attributes
     #     {
     #       'open_tickets_count' => ->(record, _user) { record.tickets.where(closed_at: nil).count },
-    #       'full_name' => ->(record, _user) { "#{record.first_name} #{record.last_name}" }
+    #       'full_name' => ->(record, _user) { "#{record.first_name} #{record.last_name}" },
+    #       'tickets_since' => {
+    #         params: [:since],
+    #         with: ->(record, _user, since) { record.tickets.where("created_at >= ?", since).count }
+    #       }
     #     }
     #   end
     #
-    # @return [Hash{String => #call}]
+    # @return [Hash{String => Object}]
     def rhino_record_computed_attributes
       {}
     end
@@ -193,25 +225,48 @@ module Rhino
     # Names that are not declared are silently skipped — the controller has
     # already rejected unknown/forbidden names with a 403, and a direct
     # +as_rhino_json+ caller must not be able to force an arbitrary call.
-    def rhino_resolve_record_computed_attributes(names, user)
+    #
+    # An attribute that declares a required parameter is likewise skipped when
+    # +arguments+ carries no entry for it, so a custom controller calling
+    # <tt>as_rhino_json(computed_attributes: ['tickets_since'])</tt> gets a
+    # missing key rather than an ArgumentError.
+    def rhino_resolve_record_computed_attributes(names, user, arguments = {})
       return {} if names.blank?
 
-      declared = rhino_record_computed_attributes
-      return {} unless declared.is_a?(Hash) && declared.any?
+      specs = Rhino::ComputedAttributeSpec.normalize(rhino_record_computed_attributes)
+      return {} if specs.empty?
+
+      arguments = (arguments || {}).transform_keys(&:to_s)
 
       Array(names).each_with_object({}) do |name, memo|
         key = name.to_s
-        next unless declared.key?(key)
+        spec = specs[key]
+        next if spec.nil?
 
-        memo[key] = rhino_call_computed(declared[key], self, user)
+        if arguments.key?(key)
+          args = Array(arguments[key])
+        elsif Rhino::ComputedAttributeSpec.requires_arguments?(spec)
+          next
+        else
+          args = []
+        end
+
+        memo[key] = rhino_call_computed(spec, self, user, args)
       end
     end
 
-    # Invoke a declared callable, tolerating lambdas of arity 0, 1 or 2.
-    # Ruby lambdas are strict about arity, so the arity is honoured rather than
-    # forcing every declaration to accept both arguments.
-    def rhino_call_computed(entry, record, user)
+    # Invoke a declared entry.
+    #
+    # A PARAMETERISED entry is always called as `call(record, user, *args)` —
+    # the declaration is the contract. A parameterless entry keeps today's
+    # tolerant arity 0/1/2 branch: Ruby lambdas are strict about arity, so the
+    # arity is honoured rather than forcing every declaration to accept both
+    # arguments.
+    def rhino_call_computed(spec, record, user, args = [])
+      entry = spec[:target]
       return entry unless entry.respond_to?(:call)
+
+      return entry.call(record, user, *args) if Rhino::ComputedAttributeSpec.parameterised?(spec)
 
       case entry.try(:arity)
       when 0 then entry.call

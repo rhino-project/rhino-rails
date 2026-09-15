@@ -175,15 +175,42 @@ module Rhino
           allowed_fields: model_class.try(:allowed_fields) || [],
           allowed_includes: model_class.try(:allowed_includes) || [],
           allowed_search: model_class.try(:allowed_search) || [],
-          # Computed attributes: names only (the callables never leave the server).
-          collection_computed_attributes: computed_names(model_class.try(:rhino_collection_computed_attributes)),
-          record_computed_attributes: computed_names(record_computed_declaration(model_class)),
+          # Computed attributes: names and parameter specs only — the callables
+          # never leave the server. The spec is what lets the collection show a
+          # parameterised attribute the way a client must actually send it.
+          collection_computed_attributes: computed_specs(model_class.try(:rhino_collection_computed_attributes)),
+          record_computed_attributes: computed_specs(record_computed_declaration(model_class)),
           default_sort: model_class.try(:default_sort_field)
         }
       end
 
-      def computed_names(declared)
-        declared.is_a?(Hash) ? declared.keys.map(&:to_s) : []
+      # name => { params:, optional: } — the same shape as a scope's spec, for
+      # the same reason.
+      def computed_specs(declared)
+        Rhino::ComputedAttributeSpec.normalize(declared).transform_values do |spec|
+          { params: spec[:params], optional: spec[:optional] }
+        end
+      end
+
+      # The query parameters that select one computed attribute, in whichever
+      # form its declaration requires: the plain list when it takes no
+      # parameters, the bracket form when it does.
+      def computed_attribute_query(key, attribute, spec)
+        params = Array(spec[:params])
+
+        return { key.to_sym => attribute } if params.empty?
+        return { "#{key}[#{attribute}]" => "example" } if params.size == 1
+
+        params.each_with_object({}) do |param, out|
+          out["#{key}[#{attribute}][#{param}]"] = "example"
+        end
+      end
+
+      # The attribute names that can be requested without arguments — the only
+      # ones a combined "give me everything" request may name, since a required
+      # parameter left out is a guaranteed 403.
+      def argument_free_computed_attributes(specs)
+        specs.reject { |_, spec| Rhino::ComputedAttributeSpec.requires_arguments?(spec) }.keys
       end
 
       # Instantiating is safe (no DB round trip) and is the only way to read an
@@ -206,7 +233,7 @@ module Rhino
         folders << { name: "Update", item: build_update_requests(base) } unless except.include?("update")
         folders << { name: "Destroy", item: build_destroy_requests(base) } unless except.include?("destroy")
 
-        if Array(meta[:collection_computed_attributes]).any? && !except.include?("computed")
+        if (meta[:collection_computed_attributes] || {}).any? && !except.include?("computed")
           folders << { name: "Computed Attributes", item: build_computed_requests(base, meta) }
         end
 
@@ -251,9 +278,9 @@ module Rhino
                                    { "fields[#{slug}]" => meta[:allowed_fields].first(5).join(",") }, headers)
         end
 
-        Array(meta[:record_computed_attributes]).each do |attribute|
+        (meta[:record_computed_attributes] || {}).each do |attribute, spec|
           requests << request_item("With computed attribute #{attribute}", "GET", base,
-                                   { computed_attributes: attribute }, headers)
+                                   computed_attribute_query("computed_attributes", attribute, spec), headers)
         end
 
         unless meta[:allowed_search].empty?
@@ -274,9 +301,9 @@ module Rhino
           requests << request_item("Show with include", "GET", path, { include: meta[:allowed_includes].first.to_s }, headers)
         end
 
-        Array(meta[:record_computed_attributes]).each do |attribute|
+        (meta[:record_computed_attributes] || {}).each do |attribute, spec|
           requests << request_item("Show with computed attribute #{attribute}", "GET", path,
-                                   { computed_attributes: attribute }, headers)
+                                   computed_attribute_query("computed_attributes", attribute, spec), headers)
         end
 
         requests
@@ -302,17 +329,22 @@ module Rhino
       def build_computed_requests(base, meta)
         headers = default_headers
         path = "#{base}/computed"
-        attributes = Array(meta[:collection_computed_attributes])
+        attributes = meta[:collection_computed_attributes] || {}
 
+        # A bare /computed skips required-parameter attributes server-side, so
+        # this stays a valid request.
         requests = [request_item("All computed attributes", "GET", path, {}, headers)]
 
-        attributes.each do |attribute|
-          requests << request_item("Computed: #{attribute}", "GET", path, { attributes: attribute }, headers)
+        attributes.each do |attribute, spec|
+          requests << request_item("Computed: #{attribute}", "GET", path,
+                                   computed_attribute_query("attributes", attribute, spec), headers)
         end
 
-        if attributes.size > 1
+        combinable = argument_free_computed_attributes(attributes)
+
+        if combinable.size > 1
           requests << request_item("Computed: multiple attributes", "GET", path,
-                                   { attributes: attributes.join(",") }, headers)
+                                   { attributes: combinable.join(",") }, headers)
         end
 
         requests

@@ -27,6 +27,10 @@ module Rhino
       render json: { message: e.message }, status: :forbidden
     end
 
+    rescue_from Rhino::InvalidComputedAttributeArgumentsError do |e|
+      render json: { message: e.message }, status: :forbidden
+    end
+
     rescue_from Rhino::QueryAttributeNotAllowedError do |e|
       render json: { message: e.message }, status: :forbidden
     end
@@ -53,7 +57,7 @@ module Rhino
     def index
       authorize model_class, :index?, policy_class: policy_for(model_class)
 
-      computed = resolve_requested_computed_attributes
+      computed, computed_args = resolve_requested_computed_attributes
       return if performed?
 
       builder = QueryBuilder.new(model_class, params: params, named_scopes: true)
@@ -66,9 +70,9 @@ module Rhino
       if per_page.present? || pagination_enabled
         result = builder.paginate
         set_pagination_headers(result[:pagination])
-        render json: { data: serialize_collection(result[:items], computed) }
+        render json: { data: serialize_collection(result[:items], computed, computed_args) }
       else
-        render json: { data: serialize_collection(builder.to_scope, computed) }
+        render json: { data: serialize_collection(builder.to_scope, computed, computed_args) }
       end
     end
 
@@ -112,7 +116,7 @@ module Rhino
       record = find_record
       authorize record, :show?, policy_class: policy_for(record)
 
-      computed = resolve_requested_computed_attributes
+      computed, computed_args = resolve_requested_computed_attributes
       return if performed?
 
       # Apply includes if requested
@@ -128,7 +132,7 @@ module Rhino
         record = builder.to_scope.first!
       end
 
-      render json: serialize_record(record, computed)
+      render json: serialize_record(record, computed, computed_args)
     end
 
     # PUT /api/{slug}/:id
@@ -192,7 +196,7 @@ module Rhino
     def trashed
       authorize model_class, :view_trashed?, policy_class: policy_for(model_class)
 
-      computed = resolve_requested_computed_attributes
+      computed, computed_args = resolve_requested_computed_attributes
       return if performed?
 
       builder = QueryBuilder.new(model_class.discarded, params: params, named_scopes: true)
@@ -205,9 +209,9 @@ module Rhino
       if per_page.present? || pagination_enabled
         result = builder.paginate
         set_pagination_headers(result[:pagination])
-        render json: { data: serialize_collection(result[:items], computed) }
+        render json: { data: serialize_collection(result[:items], computed, computed_args) }
       else
-        render json: { data: serialize_collection(builder.to_scope, computed) }
+        render json: { data: serialize_collection(builder.to_scope, computed, computed_args) }
       end
     end
 
@@ -223,12 +227,18 @@ module Rhino
     # listed. Sorting, sparse fieldsets, includes and pagination are
     # deliberately NOT applied.
     #
-    # Omitting `?attributes=` returns every declared attribute the policy allows.
+    # Omitting `?attributes=` returns every declared attribute the policy allows,
+    # minus any that declares a required parameter — those are skipped silently
+    # so adding a parameterised attribute never breaks a bare `/computed` call.
+    #
+    # Attributes that declare parameters take them in the bracket form:
+    #
+    #   ?attributes[revenue][from]=2026-01-01&attributes[revenue][to]=2026-02-01
     def computed
       authorize model_class, :index?, policy_class: policy_for(model_class)
 
-      declared = collection_computed_attributes
-      names = resolve_requested_collection_attributes(declared)
+      specs = Rhino::ComputedAttributeSpec.normalize(collection_computed_attributes)
+      names, arguments = resolve_requested_collection_attributes(collection_computed_attributes)
       return if performed?
 
       builder = QueryBuilder.new(model_class, params: params, named_scopes: true)
@@ -241,8 +251,11 @@ module Rhino
       data = names.each_with_object({}) do |name, memo|
         # Each attribute gets the base relation; ActiveRecord relations are
         # immutable under chaining, so one callable's constraints can never
-        # leak into the next one's result.
-        memo[name] = call_computed_attribute(declared[name], scope, user)
+        # leak into the next one's result. The relation is already
+        # organization-scoped, filtered and searched, and no argument can
+        # widen it.
+        spec = specs[name] || { params: [], optional: [], target: nil }
+        memo[name] = call_computed_attribute(spec, scope, user, arguments[name] || [])
       end
 
       render json: { data: data }
@@ -666,67 +679,108 @@ module Rhino
       declared.is_a?(Hash) ? declared.transform_keys(&:to_s) : {}
     end
 
-    # Parse and authorize `?attributes=a,b` for the /computed endpoint.
+    # Parse and authorize `?attributes=` for the /computed endpoint, in every
+    # accepted form:
     #
-    # Renders a 403 and returns [] on a bad/denied name. An undeclared name and
-    # a policy-denied name produce the SAME error, so the endpoint never reveals
-    # which attributes a model declares.
+    #   ?attributes=a,b                       legacy comma list, no arguments
+    #   ?attributes[revenue]=                 one name, no arguments
+    #   ?attributes[since]=2026-01-01         binds to the single declared param
+    #   ?attributes[revenue][from]=a&...      named arguments
+    #
+    # Returns <tt>[names, arguments]</tt> — arguments keyed by attribute name —
+    # or renders a 403 and returns <tt>[[], {}]</tt>. An undeclared name and a
+    # policy-denied name produce the SAME error, so the endpoint never reveals
+    # which attributes a model declares; both checks run BEFORE any argument
+    # binding, so the more specific argument messages can only ever be seen for
+    # a name the caller was already allowed to use.
     def resolve_requested_collection_attributes(declared)
+      specs = Rhino::ComputedAttributeSpec.normalize(declared)
       raw = params[:attributes]
-
-      # Reject non-scalar input (?attributes[]=x) before any lookup.
-      if raw.present? && !raw.is_a?(String)
-        render json: { message: "Computed attributes are not allowed" }, status: :forbidden
-        return []
-      end
-
       user = current_user
 
-      if raw.blank?
-        # No selection: every declared attribute the policy allows.
-        return declared.keys.select { |name| computed_attribute_allowed?(name, user) }
+      if raw.nil? || (raw.is_a?(String) && raw.strip.empty?)
+        # No selection: every declared attribute the policy allows, minus the
+        # ones that cannot run without client arguments.
+        names = specs.reject { |_, spec| Rhino::ComputedAttributeSpec.requires_arguments?(spec) }
+                     .keys
+                     .select { |name| computed_attribute_allowed?(name, user) }
+
+        return [names, {}]
       end
 
-      names = parse_attribute_list(raw)
+      requested = parse_attribute_selection(raw)
+      return [[], {}] if performed?
 
-      names.each do |name|
-        next if declared.key?(name) && computed_attribute_allowed?(name, user)
-
-        render json: { message: "Computed attribute '#{name}' is not allowed" }, status: :forbidden
-        return []
-      end
-
-      names
+      bind_attribute_selection(requested, specs, user)
     end
 
-    # Parse and authorize `?computed_attributes=a,b` for index/show/trashed —
-    # the OPT-IN record-level computed attributes. Absent or blank means "none",
-    # which is byte-for-byte the pre-feature behavior.
+    # Parse and authorize `?computed_attributes=` for index/show/trashed — the
+    # OPT-IN record-level computed attributes. Accepts the same four forms as
+    # `?attributes=` (see resolve_requested_collection_attributes).
+    #
+    # Absent or blank means "none", which is byte-for-byte the pre-feature
+    # behavior.
     def resolve_requested_computed_attributes
       raw = params[:computed_attributes]
-      return [] if raw.nil? || raw == ""
+      return [[], {}] if raw.nil? || raw == ""
 
-      unless raw.is_a?(String)
+      requested = parse_attribute_selection(raw)
+      return [[], {}] if performed? || requested.empty?
+
+      declared = model_class.new.try(:rhino_record_computed_attributes)
+
+      bind_attribute_selection(
+        requested,
+        Rhino::ComputedAttributeSpec.normalize(declared),
+        current_user
+      )
+    end
+
+    # Turn the raw query value into an ordered list of
+    # <tt>[name, raw_arguments]</tt> pairs.
+    def parse_attribute_selection(raw)
+      return parse_attribute_list(raw).map { |name| [name, ""] } if raw.is_a?(String)
+
+      raw = raw.to_unsafe_h if raw.respond_to?(:to_unsafe_h)
+
+      unless raw.is_a?(Hash)
         render json: { message: "Computed attributes are not allowed" }, status: :forbidden
         return []
       end
 
-      names = parse_attribute_list(raw)
-      return [] if names.empty?
+      pairs = []
+      raw.each do |key, value|
+        # A positional list (?attributes[]=x) or a blank key names nothing:
+        # reject before any lookup.
+        if key.to_s.empty?
+          render json: { message: "Computed attributes are not allowed" }, status: :forbidden
+          return []
+        end
 
-      declared = model_class.new.try(:rhino_record_computed_attributes)
-      declared = declared.is_a?(Hash) ? declared.transform_keys(&:to_s) : {}
-
-      user = current_user
-
-      names.each do |name|
-        next if declared.key?(name) && computed_attribute_allowed?(name, user)
-
-        render json: { message: "Computed attribute '#{name}' is not allowed" }, status: :forbidden
-        return []
+        pairs << [key.to_s, value]
       end
 
-      names
+      pairs
+    end
+
+    # Gate every requested attribute, then bind its arguments.
+    def bind_attribute_selection(requested, specs, user)
+      names = []
+      arguments = {}
+
+      requested.each do |(name, raw_arguments)|
+        # Gate first — declared AND policy-visible — so nothing below can
+        # distinguish an undeclared name from a forbidden one.
+        unless specs.key?(name) && computed_attribute_allowed?(name, user)
+          render json: { message: "Computed attribute '#{name}' is not allowed" }, status: :forbidden
+          return [[], {}]
+        end
+
+        arguments[name] = Rhino::ComputedAttributeSpec.bind(name, specs[name], raw_arguments)
+        names << name
+      end
+
+      [names.uniq, arguments]
     end
 
     # Split a comma-separated attribute list, dropping blanks and duplicates.
@@ -759,9 +813,18 @@ module Rhino
       true
     end
 
-    # Invoke a declared callable, tolerating lambdas of arity 0, 1 or 2.
-    def call_computed_attribute(entry, scope, user)
+    # Invoke a declared entry.
+    #
+    # A PARAMETERISED entry is always called as `call(scope, user, *args)` — the
+    # declaration is the contract, and a mismatched lambda is a developer error,
+    # exactly as it is for a parameterised scope. A parameterless entry keeps
+    # today's tolerant arity 0/1/2 branch, so no existing lambda changes
+    # behavior.
+    def call_computed_attribute(spec, scope, user, args = [])
+      entry = spec[:target]
       return entry unless entry.respond_to?(:call)
+
+      return entry.call(scope, user, *args) if Rhino::ComputedAttributeSpec.parameterised?(spec)
 
       case entry.try(:arity)
       when 0 then entry.call
@@ -770,16 +833,19 @@ module Rhino
       end
     end
 
-    def serialize_record(record, computed_attributes = [])
+    def serialize_record(record, computed_attributes = [], computed_arguments = {})
       if record.respond_to?(:as_rhino_json)
-        record.as_rhino_json(computed_attributes: computed_attributes)
+        record.as_rhino_json(
+          computed_attributes: computed_attributes,
+          computed_arguments: computed_arguments
+        )
       else
         record.as_json
       end
     end
 
-    def serialize_collection(records, computed_attributes = [])
-      records.map { |r| serialize_record(r, computed_attributes) }
+    def serialize_collection(records, computed_attributes = [], computed_arguments = {})
+      records.map { |r| serialize_record(r, computed_attributes, computed_arguments) }
     end
 
     # ------------------------------------------------------------------

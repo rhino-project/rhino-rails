@@ -59,23 +59,31 @@ RSpec.describe "Postman export — computed attributes" do
   end
 
   describe "introspection" do
-    it "collects the declared collection attribute names" do
+    # The meta carries name => parameter spec (the same shape as a scope's), so
+    # the collection can show a parameterised attribute the way a client must
+    # actually send it. The callables never leave the server.
+    it "collects the declared collection attribute names and specs" do
       meta = command.send(:introspect_model, ExportComputedPost, "export_computed_posts")
 
-      expect(meta[:collection_computed_attributes]).to eq(%w[published_count draft_count])
+      expect(meta[:collection_computed_attributes]).to eq(
+        "published_count" => { params: [], optional: [] },
+        "draft_count" => { params: [], optional: [] }
+      )
     end
 
-    it "collects the declared record attribute names" do
+    it "collects the declared record attribute names and specs" do
       meta = command.send(:introspect_model, ExportComputedPost, "export_computed_posts")
 
-      expect(meta[:record_computed_attributes]).to eq(%w[word_count])
+      expect(meta[:record_computed_attributes]).to eq(
+        "word_count" => { params: [], optional: [] }
+      )
     end
 
-    it "returns empty lists for a model that declares nothing" do
+    it "returns empty maps for a model that declares nothing" do
       meta = command.send(:introspect_model, ExportPlainPost, "export_plain_posts")
 
-      expect(meta[:collection_computed_attributes]).to eq([])
-      expect(meta[:record_computed_attributes]).to eq([])
+      expect(meta[:collection_computed_attributes]).to eq({})
+      expect(meta[:record_computed_attributes]).to eq({})
     end
   end
 
