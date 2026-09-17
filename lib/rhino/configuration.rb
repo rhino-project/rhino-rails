@@ -16,9 +16,14 @@ module Rhino
     # Default 3 — a base scope, a window, and one more predicate.
     attr_reader :max_scopes_per_request
     attr_reader :auth
+    # Explicit per-model request-class registrations, kept OUT of @models so its
+    # `slug => "ClassName"` shape (read all over the library) is untouched.
+    # Shape: { slug_sym => { store: "ClassName" | nil, update: "ClassName" | nil } }
+    attr_reader :model_requests
 
     def initialize
       @models = {}
+      @model_requests = {}
       @route_groups = {}
       @multi_tenant = {
         organization_identifier_column: "id"
@@ -63,9 +68,58 @@ module Rhino
 
     # Register a model with its slug
     # Usage: config.model :posts, 'Post'
-    def model(slug, klass_name)
-      @models[slug.to_sym] = klass_name.to_s
+    #
+    # The optional `store_request:` / `update_request:` keywords override the
+    # `{Model}StoreRequest` / `{Model}UpdateRequest` naming convention for that
+    # model's POST / PUT action:
+    #
+    #   config.model :tasks, "Task", store_request: "CreateTask", update_request: "EditTask"
+    #
+    # Class NAMES (strings) are stored, never constants, so a dev-mode Zeitwerk
+    # reload never hands back an unloaded class. A registration that cannot be
+    # constantized at request time raises Rhino::ConfigurationError rather than
+    # silently skipping validation.
+    def model(slug, klass_name, store_request: nil, update_request: nil)
+      key = slug.to_sym
+      @models[key] = klass_name.to_s
+
+      requests = {
+        store: normalize_request_class_name(store_request),
+        update: normalize_request_class_name(update_request)
+      }
+
+      if requests[:store].nil? && requests[:update].nil?
+        @model_requests.delete(key)
+      else
+        @model_requests[key] = requests
+      end
     end
+
+    # The explicitly registered request class NAME for a model slug + action,
+    # or nil when the model relies on the naming convention.
+    #
+    # @param slug [String, Symbol, nil]
+    # @param action [String, Symbol] "store" or "update"
+    # @return [String, nil]
+    def request_class_for(slug, action)
+      return nil if slug.nil? || slug.to_s.empty?
+
+      entry = @model_requests[slug.to_sym]
+      return nil unless entry
+
+      entry[action.to_s == "update" ? :update : :store]
+    end
+
+    # Coerce a request-class registration to a String class name. A Class is
+    # accepted for convenience but stored by name (reloader safety); blank
+    # values register nothing.
+    def normalize_request_class_name(value)
+      return nil if value.nil?
+
+      name = value.is_a?(Class) ? value.name.to_s : value.to_s
+      name.strip.empty? ? nil : name.strip
+    end
+    private :normalize_request_class_name
 
     # Register a route group with its configuration
     # Usage: config.route_group :tenant, prefix: ':organization', middleware: [Rhino::Middleware::ResolveOrganizationFromRoute], models: :all

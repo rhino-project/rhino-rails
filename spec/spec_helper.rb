@@ -377,11 +377,20 @@ RSpec.configure do |config|
     end
   end
 
-  # Clean up database between tests
+  # Clean up database between tests.
+  #
+  # An example tagged `no_db_transaction: true` runs WITHOUT this wrapper. A
+  # transaction opened by the code under test would otherwise merely join this
+  # one, so its own `raise ActiveRecord::Rollback` would be a no-op and a real
+  # rollback could not be asserted. Such an example owns its own cleanup.
   config.around(:each) do |example|
-    ActiveRecord::Base.transaction do
+    if example.metadata[:no_db_transaction]
       example.run
-      raise ActiveRecord::Rollback
+    else
+      ActiveRecord::Base.transaction do
+        example.run
+        raise ActiveRecord::Rollback
+      end
     end
   end
 end

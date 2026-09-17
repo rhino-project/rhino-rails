@@ -340,6 +340,40 @@ RSpec.describe Rhino::Commands::GenerateCommand do
   end
 
   # ------------------------------------------------------------------
+  # write_request_file
+  # ------------------------------------------------------------------
+
+  describe "#write_request_file" do
+    it "generates a store request file" do
+      relative = command.send(:write_request_file, "Article", "store")
+
+      expect(relative).to eq("app/requests/article_store_request.rb")
+      path = File.join(tmp_dir, relative)
+      expect(File.exist?(path)).to be true
+
+      content = File.read(path)
+      expect(content).to include("class ArticleStoreRequest < Rhino::ResourceRequest")
+      expect(content).to include("# def authorize?")
+      expect(content).to include("# def prepare(input)")
+      expect(content).to include("role_slug_for_validation(organization)")
+      expect(content).to include('route_group == "tenant"')
+      expect(content).not_to include("# validate :status_may_not_move_backwards")
+    end
+
+    it "generates an update request file with a record-dependent example" do
+      relative = command.send(:write_request_file, "Article", "update")
+
+      expect(relative).to eq("app/requests/article_update_request.rb")
+      content = File.read(File.join(tmp_dir, relative))
+
+      expect(content).to include("class ArticleUpdateRequest < Rhino::ResourceRequest")
+      expect(content).to include("# validate :status_may_not_move_backwards")
+      expect(content).to include("# def status_may_not_move_backwards")
+      expect(content).to include("record.status")
+    end
+  end
+
+  # ------------------------------------------------------------------
   # register_model_in_config
   # ------------------------------------------------------------------
 
@@ -521,6 +555,51 @@ RSpec.describe Rhino::Commands::GenerateCommand do
 
       content = File.read(path)
       expect(content).to include("ArticleScope")
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # generate_request (the fourth menu entry)
+  # ------------------------------------------------------------------
+
+  describe "#generate_request" do
+    before { allow(command).to receive(:task) { |_label, &block| block.call } }
+
+    it "generates only the store request when store is chosen" do
+      allow(command).to receive(:select).and_return("store")
+
+      command.send(:generate_request, "Article")
+
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_store_request.rb"))).to be true
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_update_request.rb"))).to be false
+    end
+
+    it "generates only the update request when update is chosen" do
+      allow(command).to receive(:select).and_return("update")
+
+      command.send(:generate_request, "Article")
+
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_store_request.rb"))).to be false
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_update_request.rb"))).to be true
+    end
+
+    it "generates both requests when both is chosen" do
+      allow(command).to receive(:select).and_return("both")
+
+      command.send(:generate_request, "Article")
+
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_store_request.rb"))).to be true
+      expect(File.exist?(File.join(tmp_dir, "app/requests/article_update_request.rb"))).to be true
+    end
+
+    it "strips a Request suffix the user typed so ArticleStoreRequest is not doubled up" do
+      allow(command).to receive(:select).and_return("store")
+
+      command.send(:generate_request, "ArticleStoreRequest")
+
+      path = File.join(tmp_dir, "app/requests/article_store_request.rb")
+      expect(File.exist?(path)).to be true
+      expect(File.read(path)).to include("class ArticleStoreRequest < Rhino::ResourceRequest")
     end
   end
 

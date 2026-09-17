@@ -1,0 +1,111 @@
+# frozen_string_literal: true
+
+# Validation for <%= action == "update" ? "PUT /{resource}/:id" : "POST /{resource}" %> on <%= name %>.
+#
+# Found by convention — Rhino looks for <%= class_name %> whenever
+# <%= name %> handles its <%= action %> action, and falls back to the model's own
+# validations when no request class exists. Override the convention with:
+#
+#   config.model :<%= name.underscore.pluralize %>, "<%= name %>", <%= action %>_request: "My<%= action == "update" ? "Update" : "Store" %>Class"
+#
+# Context available to every method below:
+#   user          — the authenticated user (or nil)
+#   organization  — the resolved organization (or nil outside a tenant context)
+#   route_group   — the matched route's group ("tenant", "public", ...)
+#   action        — "<%= action %>"
+#   record        — <%= action == "update" ? "the PRE-UPDATE record" : "nil (there is no record yet on store)" %>
+#   input         — the prepared, string-keyed request data
+class <%= class_name %> < Rhino::ResourceRequest
+  # Declare an attribute for EVERY field this action may write.
+  #
+  # The declared attributes present in the input ARE the write payload: a field
+  # with no `attribute` here is silently dropped, never persisted — even if the
+  # policy permits it, and even if `prepare` added it.
+  #
+  # attribute :title, :string
+  # attribute :status, :string
+  # attribute :project_id, :integer
+  # attribute :due_date, :date
+
+  # Ordinary ActiveModel validations. Unlike the model-level path, these are NOT
+  # relaxed for partial updates — declare what is optional yourself.
+  #
+  # validates :title, presence: true, length: { maximum: 255 }
+  # validates :status, inclusion: { in: %w[todo doing done] }, allow_nil: true
+
+  # Rules that depend on WHO is asking: branch on `user` instead of keeping a
+  # role-keyed map on the model. Remember that the policy already decided which
+  # fields the role may write — this decides what a valid value looks like.
+  #
+  # validates :status,
+  #           inclusion: { in: %w[todo doing] },
+  #           if: -> { user.nil? || user.role_slug_for_validation(organization) != "admin" }
+
+  # Rules that depend on WHERE the request came from.
+  #
+  # validates :assignee_id, presence: true, if: -> { route_group == "tenant" }
+
+<% if action == "update" -%>
+  # Rules that depend on the record's CURRENT state. `record` is the
+  # organization-scoped row as it exists BEFORE this update is applied.
+  #
+  # validate :status_may_not_move_backwards
+
+<% end -%>
+  # Refuse the request outright. Returning false renders 403 with exactly the
+  # body a policy denial renders, so it leaks nothing about this model.
+  #
+  # def authorize?
+  #   route_group != "public"
+  # end
+
+  # Normalize the input before validation. Runs BEFORE authorize?, and AFTER the
+  # policy's forbidden-field check — so anything added here is server-authored
+  # and trusted. Never copy a client value into a different key here; that would
+  # write a field the policy denied. A field added here still needs an
+  # `attribute` above to be persisted. A non-Hash return value is ignored.
+  #
+  # Because it runs before the validations, `prepare` sees RAW client input: a
+  # client can send {"title": ["x"]} or {"title": 5}. Guard every string
+  # operation with is_a?(String) and leave anything else untouched, so a
+  # validation rejects it with a 422 instead of prepare blowing up (or silently
+  # stringifying it into something that passes).
+  #
+  # def prepare(input)
+  #   title = input["title"]
+  #   input.merge("title" => title.is_a?(String) ? title.strip : title)
+  # end
+
+  # An `attribute :title, :string` casts ANY value to a String, so ["x"] becomes
+  # '["x"]' and would sail past presence/length. When the shape matters, check
+  # the RAW input rather than the cast value.
+  #
+  # validate :title_must_be_text
+<% if action != "update" -%>
+
+  # private
+
+  # def title_must_be_text
+  #   return if input["title"].nil? || input["title"].is_a?(String)
+  #
+  #   errors.add(:title, "must be a string")
+  # end
+<% end -%>
+<% if action == "update" -%>
+
+  # private
+
+  # def title_must_be_text
+  #   return if input["title"].nil? || input["title"].is_a?(String)
+  #
+  #   errors.add(:title, "must be a string")
+  # end
+
+  # def status_may_not_move_backwards
+  #   return if record.nil? || status.nil?
+  #   return unless record.status == "done" && status != "done"
+  #
+  #   errors.add(:status, "cannot be reopened once the task is done")
+  # end
+<% end -%>
+end

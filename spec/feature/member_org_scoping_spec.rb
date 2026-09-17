@@ -591,4 +591,136 @@ RSpec.describe "Member endpoint organization scoping" do
       }.to raise_error(ActiveRecord::RecordNotFound)
     end
   end
+
+  # ==================================================================
+  # POST /nested — the SAME leak, on the write path
+  #
+  # authorize_nested_operation resolved an update operation's target with a
+  # bare `op_model_class.find(operation["id"])`. Models including
+  # Rhino::BelongsToOrganization were accidentally protected by that concern's
+  # default_scope; every other org-owned shape — a plain organization_id
+  # column, a for_organization scope, or an indirect belongs_to chain — was
+  # reachable across tenants, so org B could UPDATE org A's rows through
+  # POST /nested even though GET/PUT on the member endpoint 404'd.
+  #
+  # Nested supports only "create" and "update" (validate_nested_structure), so
+  # there is no delete operation to leak.
+  # ==================================================================
+
+  describe "POST /nested cross-organization writes" do
+    def nested_update(slug, id, data, org:)
+      call_action(:nested,
+        params: {
+          model_slug: slug,
+          operations: [{ model: slug, action: "update", id: id, data: data }]
+        },
+        headers: auth_headers(user),
+        env_overrides: { "rhino.organization" => org })
+    end
+
+    context "indirect chain, 1 hop (task -> project -> org)" do
+      it "updates a same-org record" do
+        response = nested_update("scoping_tasks", task_a.id, { title: "Renamed" }, org: org_a)
+
+        expect(response.status).to eq(200)
+        expect(task_a.reload.title).to eq("Renamed")
+      end
+
+      it "raises RecordNotFound updating a cross-org record" do
+        expect {
+          nested_update("scoping_tasks", task_b.id, { title: "Hacked" }, org: org_a)
+        }.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(task_b.reload.title).to eq("Task B")
+      end
+    end
+
+    context "indirect chain, 2 hops (comment -> task -> project -> org)" do
+      it "raises RecordNotFound updating a cross-org record" do
+        own = ScopingComment.create!(scoping_task_id: task_a.id, body: "Mine")
+        foreign = ScopingComment.create!(scoping_task_id: task_b.id, body: "Theirs")
+
+        expect(nested_update("scoping_comments", own.id, { body: "Edited" }, org: org_a).status)
+          .to eq(200)
+
+        expect {
+          nested_update("scoping_comments", foreign.id, { body: "Hacked" }, org: org_a)
+        }.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(foreign.reload.body).to eq("Theirs")
+      end
+    end
+
+    context "direct organization_id column" do
+      it "raises RecordNotFound updating a cross-org record" do
+        expect {
+          nested_update("scoping_projects", project_b.id, { title: "Hacked" }, org: org_a)
+        }.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(project_b.reload.title).to eq("Project B")
+      end
+    end
+
+    context "custom for_organization scope" do
+      it "raises RecordNotFound updating a cross-org record" do
+        own = ScopingOrgDoc.create!(organization_id: org_a.id, title: "Doc A")
+        foreign = ScopingOrgDoc.create!(organization_id: org_b.id, title: "Doc B")
+
+        expect(nested_update("scoping_org_docs", own.id, { title: "Edited" }, org: org_a).status)
+          .to eq(200)
+
+        expect {
+          nested_update("scoping_org_docs", foreign.id, { title: "Hacked" }, org: org_a)
+        }.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(foreign.reload.title).to eq("Doc B")
+      end
+    end
+
+    context "a model with no organization mechanism at all" do
+      it "stays reachable (lenient, matches index and the member endpoints)" do
+        record = ScopingGlobal.create!(title: "Global")
+
+        response = nested_update("scoping_globals", record.id, { title: "Edited" }, org: org_a)
+
+        expect(response.status).to eq(200)
+        expect(record.reload.title).to eq("Edited")
+      end
+    end
+
+    context "no org context (single-tenant / non-tenant route group)" do
+      it "keeps today's unscoped nested lookup" do
+        response = call_action(:nested,
+          params: {
+            model_slug: "scoping_tasks",
+            operations: [{ model: "scoping_tasks", action: "update", id: task_b.id,
+                           data: { title: "Allowed without a tenant" } }]
+          },
+          headers: auth_headers(user))
+
+        expect(response.status).to eq(200)
+        expect(task_b.reload.title).to eq("Allowed without a tenant")
+      end
+    end
+
+    context "a mixed payload" do
+      it "aborts the whole transaction when a later operation targets another org" do
+        expect {
+          call_action(:nested,
+            params: {
+              model_slug: "scoping_tasks",
+              operations: [
+                { model: "scoping_tasks", action: "update", id: task_a.id, data: { title: "Would be fine" } },
+                { model: "scoping_tasks", action: "update", id: task_b.id, data: { title: "Hacked" } }
+              ]
+            },
+            headers: auth_headers(user),
+            env_overrides: { "rhino.organization" => org_a })
+        }.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(task_a.reload.title).to eq("Task A")
+        expect(task_b.reload.title).to eq("Task B")
+      end
+    end
+  end
 end

@@ -95,6 +95,34 @@ module Rhino
         }, status: :forbidden
       end
 
+      # Request class (Rhino::ResourceRequest) for this model + action, if any.
+      # Resolved AFTER the forbidden-field gate so `prepare` can never launder a
+      # field past the policy, and BEFORE the legacy model rules, which are not
+      # consulted at all when a request class is present for this action.
+      if (request_class = request_class_for("store"))
+        status, payload = run_resource_request(request_class, data, "store", nil, model_class)
+        return render_request_class_forbidden if status == :forbidden
+        return render json: { errors: payload }, status: :unprocessable_entity if status == :invalid
+
+        add_organization_to_data(payload)
+
+        begin
+          created = model_class.create!(payload)
+        rescue ActiveRecord::RecordInvalid => e
+          # A model-level `validates` rule the request class did not reproduce
+          # still runs inside create!. Render it in the same envelope the
+          # request class's own failures use instead of letting it escape as a
+          # 500. The legacy path cannot reach here — it ran those very rules up
+          # front — so this rescue is confined to the request-class branch.
+          return render json: { errors: record_validation_errors(e.record) },
+                        status: :unprocessable_entity
+        end
+
+        return render json: serialize_record(created), status: :created
+      end
+
+      # @deprecated Legacy model-level validation path. Byte-for-byte unchanged;
+      #   reached only when no request class exists for this model + action.
       model_instance = model_class.new
       validation = model_instance.validate_for_action(
         data, permitted_fields: permitted_fields, organization: current_organization
@@ -159,6 +187,29 @@ module Rhino
         }, status: :forbidden
       end
 
+      # Request class for this model + action, if any. `record` is the already
+      # loaded, ORGANIZATION-SCOPED row (never re-fetched by bare id), so a
+      # record-dependent rule can never see another tenant's state.
+      if (request_class = request_class_for("update"))
+        status, payload = run_resource_request(request_class, data, "update", record, model_class)
+        return render_request_class_forbidden if status == :forbidden
+        return render json: { errors: payload }, status: :unprocessable_entity if status == :invalid
+
+        begin
+          record.update!(payload)
+        rescue ActiveRecord::RecordInvalid => e
+          # See the note in `store`: a model rule stricter than the request
+          # class must surface as the standard 422, not a 500.
+          return render json: { errors: record_validation_errors(e.record) },
+                        status: :unprocessable_entity
+        end
+
+        record.reload
+        return render json: serialize_record(record)
+      end
+
+      # @deprecated Legacy model-level validation path. Byte-for-byte unchanged;
+      #   reached only when no request class exists for this model + action.
       model_instance = model_class.new
       validation = model_instance.validate_for_action(
         data, permitted_fields: permitted_fields, organization: current_organization
@@ -329,6 +380,10 @@ module Rhino
 
       # Execute all operations in a transaction
       results = execute_nested_operations(operations, validated_per_op, auth_results)
+      # execute_nested_operations renders (and rolls back) when a model-level
+      # rule fails at save time on the request-class path.
+      return if performed?
+
       render json: { results: results }
     end
 
@@ -968,6 +1023,39 @@ module Rhino
         return nil
       end
 
+      # Request class for this operation. `action` maps to the request-class
+      # vocabulary: a nested "create" op is the "store" action.
+      request_action = action == "create" ? "store" : "update"
+      if (request_class = request_class_for(request_action, op_model_class, slug))
+        # Non-failing, organization-scoped lookup: `nil` on a miss so the
+        # existing authorize_nested_operation step still produces today's
+        # 403/404 in today's order.
+        op_record = request_action == "update" ? find_nested_operation_record(op_model_class, operation["id"]) : nil
+
+        status, payload = run_resource_request(
+          request_class, operation["data"], request_action, op_record, op_model_class
+        )
+
+        if status == :forbidden
+          render json: { message: "This action is unauthorized." }, status: :forbidden
+          return nil
+        end
+
+        if status == :invalid
+          errors = {}
+          payload.each do |key, messages|
+            errors["operations.#{index}.data.#{key}"] = messages
+          end
+          render json: { message: "Validation failed.", errors: errors }, status: :unprocessable_entity
+          return nil
+        end
+
+        return payload
+      end
+
+      # @deprecated Legacy model-level validation path for nested operations.
+      #   Unchanged; reached only when no request class exists for this
+      #   operation's model + action.
       model_instance = op_model_class.new
       validation = model_instance.validate_for_action(operation["data"], permitted_fields: permitted_fields)
 
@@ -995,7 +1083,20 @@ module Rhino
         end
         nil
       else
-        record = op_model_class.find(operation["id"])
+        # ORGANIZATION-SCOPED lookup. A bare `op_model_class.find` let org B
+        # update org A's rows through POST /nested: only models including
+        # Rhino::BelongsToOrganization were protected, and then only by that
+        # concern's default_scope, so a plain organization_id column, a
+        # for_organization scope and every indirect belongs_to chain
+        # (task -> project -> org) leaked on the WRITE path while the member
+        # endpoints 404'd. Uses the same lenient mechanism find_record and
+        # index use, so a model with no org mechanism stays reachable and a
+        # request with no org context is unscoped exactly as before. A
+        # cross-org id now raises RecordNotFound, indistinguishable from an id
+        # that does not exist.
+        record = Rhino::ScopesToOrganization.scope_to_organization(
+          op_model_class.all, op_model_class, current_organization
+        ).find(operation["id"])
         unless policy.new(current_user, record).update?
           render json: { message: "This action is unauthorized." }, status: :forbidden
           return nil
@@ -1006,37 +1107,72 @@ module Rhino
 
     def execute_nested_operations(operations, validated_per_op, auth_results)
       results = []
+      # [index, record] for an operation whose MODEL rules failed at save time
+      # on the request-class path. Set inside the transaction, rendered after it
+      # has rolled back.
+      save_failure = nil
 
       ActiveRecord::Base.transaction do
         operations.each_with_index do |op, index|
           validated = validated_per_op[index]
           model_or_nil = auth_results[index]
 
-          if op["action"] == "create"
-            op_model_class = Rhino.config.resolve_model(op["model"])
-            data = validated.dup
-            add_organization_to_data(data)
-            record = op_model_class.create!(data)
-            results << {
-              model: op["model"],
-              action: "create",
-              id: record.id,
-              data: serialize_record(record)
-            }
-          else
-            model_or_nil.update!(validated)
-            model_or_nil.reload
-            results << {
-              model: op["model"],
-              action: "update",
-              id: model_or_nil.id,
-              data: serialize_record(model_or_nil)
-            }
+          begin
+            if op["action"] == "create"
+              op_model_class = Rhino.config.resolve_model(op["model"])
+              data = validated.dup
+              add_organization_to_data(data)
+              record = op_model_class.create!(data)
+              results << {
+                model: op["model"],
+                action: "create",
+                id: record.id,
+                data: serialize_record(record)
+              }
+            else
+              model_or_nil.update!(validated)
+              model_or_nil.reload
+              results << {
+                model: op["model"],
+                action: "update",
+                id: model_or_nil.id,
+                data: serialize_record(model_or_nil)
+              }
+            end
+          rescue ActiveRecord::RecordInvalid => e
+            # Only the request-class path converts a save-time model-rule
+            # failure into a 422. The legacy path ran those same rules in
+            # validate_for_action before getting here, so it keeps raising
+            # exactly as it does today.
+            raise unless nested_operation_uses_request_class?(op)
+
+            save_failure = [index, e.record]
+            raise ActiveRecord::Rollback
           end
         end
       end
 
+      if save_failure
+        index, invalid_record = save_failure
+        errors = {}
+        record_validation_errors(invalid_record).each do |key, messages|
+          errors["operations.#{index}.data.#{key}"] = messages
+        end
+        render json: { message: "Validation failed.", errors: errors }, status: :unprocessable_entity
+        return nil
+      end
+
       results
+    end
+
+    # Whether a nested operation was validated by a request class. Re-resolved
+    # (never memoized) rather than threaded through, and only ever called from
+    # the RecordInvalid rescue, so the happy path pays nothing.
+    def nested_operation_uses_request_class?(operation)
+      op_model_class = Rhino.config.resolve_model(operation["model"])
+      request_action = operation["action"] == "create" ? "store" : "update"
+
+      !request_class_for(request_action, op_model_class, operation["model"]).nil?
     end
 
     # ------------------------------------------------------------------
@@ -1057,6 +1193,140 @@ module Rhino
       else
         ["*"]
       end
+    end
+
+    # ------------------------------------------------------------------
+    # Request classes (Rhino::ResourceRequest)
+    # ------------------------------------------------------------------
+
+    # Resolve the request class for a model + action, or nil.
+    #
+    # Precedence: explicit registration (config.model ..., store_request:) →
+    # "{ModelBasename}StoreRequest" / "{ModelBasename}UpdateRequest" → none.
+    #
+    # Resolution happens on EVERY request and is never memoized: caching the
+    # constant would hand back a stale, unloaded class after a dev-mode Zeitwerk
+    # reload.
+    #
+    # An EXPLICIT registration that cannot be resolved — missing constant, or a
+    # constant that is not a Rhino::ResourceRequest — raises. A silently ignored
+    # validation class the developer asked for by name is a security hole.
+    #
+    # A CONVENTION hit that is not a Rhino::ResourceRequest is LOGGED and
+    # ignored, falling through to the legacy path exactly as if no class
+    # existed. The convention is a guess: an app upgrading from 4.9.0 that
+    # happens to own an unrelated top-level `PostStoreRequest` must keep
+    # working, not start returning 500s. A convention miss falls through
+    # silently; that is what "convention" means.
+    #
+    # @param action [String] "store" or "update"
+    # @return [Class, nil]
+    def request_class_for(action, klass = model_class, slug = model_slug)
+      explicit = Rhino.config.request_class_for(slug, action)
+
+      if explicit.present?
+        const = explicit.safe_constantize
+        raise_request_class_configuration_error(explicit, slug, action) unless const
+        unless resource_request_class?(const)
+          raise_request_class_configuration_error(explicit, slug, action)
+        end
+
+        return const
+      end
+
+      return nil unless klass.respond_to?(:name) && klass.name.present?
+
+      suffix = action.to_s == "update" ? "UpdateRequest" : "StoreRequest"
+      name = "#{klass.name.demodulize}#{suffix}"
+      const = name.safe_constantize
+      return nil unless const
+      return const if resource_request_class?(const)
+
+      warn_ignored_request_class(name, slug, action)
+      nil
+    end
+
+    def resource_request_class?(const)
+      const.is_a?(Class) && const < Rhino::ResourceRequest
+    end
+
+    def warn_ignored_request_class(name, slug, action)
+      return unless defined?(Rails) && Rails.respond_to?(:logger)
+
+      Rails.logger&.warn(
+        "Rhino: ignoring #{name} for [#{slug}.#{action}]: " \
+        "it does not inherit from Rhino::ResourceRequest"
+      )
+    end
+
+    def raise_request_class_configuration_error(label, slug, action)
+      raise Rhino::ConfigurationError,
+            "Rhino: request class [#{label}] configured for [#{slug}.#{action}] does not exist."
+    end
+
+    # Instantiate and run a resolved request class.
+    #
+    # @return [Array] [:ok, validated_hash] | [:forbidden, nil] | [:invalid, errors_hash]
+    def run_resource_request(request_class, data, action, record, fk_model_class)
+      request = request_class.new(
+        input: data,
+        user: current_user,
+        organization: current_organization,
+        route_group: current_route_group,
+        action: action,
+        record: record
+      )
+
+      return [:forbidden, nil] unless request.authorize?
+
+      result = request.run
+      errors = result[:errors] || {}
+
+      # Cross-tenant FK validation runs ON TOP of the request class's own rules,
+      # through the same (direct + indirect FK chain) implementation the legacy
+      # path uses. Errors merge into the same 422 body.
+      if current_organization
+        fk_instance = fk_model_class.new
+        if fk_instance.respond_to?(:rhino_validate_foreign_keys)
+          errors = errors.merge(
+            fk_instance.rhino_validate_foreign_keys(result[:validated], current_organization)
+          )
+        end
+      end
+
+      return [:invalid, errors] if errors.any?
+
+      [:ok, result[:validated]]
+    end
+
+    # Model-level validations still run inside create!/update!. On the
+    # request-class path a rule the request class did not reproduce would
+    # otherwise escape as ActiveRecord::RecordInvalid (a 500), so it is rendered
+    # in the same shape the request class's own failures use: String keys,
+    # arrays of messages.
+    def record_validation_errors(record)
+      return {} unless record.respond_to?(:errors)
+
+      record.errors.to_hash.each_with_object({}) do |(attribute, messages), memo|
+        memo[attribute.to_s] = Array(messages)
+      end
+    end
+
+    # Byte-identical to a policy denial on purpose: a client must not be able to
+    # tell an `authorize?` refusal from a policy refusal.
+    def render_request_class_forbidden
+      render json: { message: "This action is unauthorized." }, status: :forbidden
+    end
+
+    # Organization-scoped, non-failing primary-key lookup used to populate
+    # `record` for a nested update operation.
+    def find_nested_operation_record(op_model_class, id)
+      return nil if id.nil?
+
+      scope = Rhino::ScopesToOrganization.scope_to_organization(
+        op_model_class.all, op_model_class, current_organization
+      )
+      scope.find_by(op_model_class.primary_key => id)
     end
 
     def find_forbidden_fields(params_data, permitted_fields)

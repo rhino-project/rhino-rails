@@ -33,6 +33,11 @@ module Rhino
     # Filters to only permitted fields, then runs ActiveModel validations
     # and cross-tenant FK validation.
     #
+    # @deprecated Model-level validation is superseded by request classes
+    #   ({Model}StoreRequest / {Model}UpdateRequest, see Rhino::ResourceRequest).
+    #   It still works unchanged for every model that has no request class for
+    #   the action and will be removed in 5.0.
+    #
     # @param params [Hash] The request data
     # @param permitted_fields [Array<String>] Fields the user is allowed to set (['*'] for all)
     # @param organization [Object, nil] Current organization for FK scoping (optional)
@@ -78,6 +83,25 @@ module Rhino
       else
         { valid: true, errors: {}, validated: filtered }
       end
+    end
+
+    # Public entry point for cross-tenant FK validation.
+    #
+    # The request-class path (Rhino::ResourceRequest) runs its own validations
+    # and therefore never calls validate_for_action, but it still needs the
+    # cross-tenant FK check — including the indirect case, where the referenced
+    # table reaches the organization through a FK chain rather than an
+    # organization_id column. This wraps the existing private implementation so
+    # the chain walk and its class-level caches stay in one place.
+    #
+    # @param data [Hash] the write payload (string-keyed)
+    # @param organization [Object, nil]
+    # @return [Hash<String, Array<String>>] {} when there is no organization
+    def rhino_validate_foreign_keys(data, organization)
+      return {} unless organization
+      return {} unless data.is_a?(Hash)
+
+      validate_foreign_keys_for_organization(data, organization)
     end
 
     private

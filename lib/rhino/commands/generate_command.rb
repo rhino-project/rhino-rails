@@ -15,6 +15,7 @@ module Rhino
           menu.choice "Model (with migration and factory)", "model"
           menu.choice "Policy (extends ResourcePolicy)", "policy"
           menu.choice "Scope (for ScopedDB)", "scope"
+          menu.choice "Request (validation for store/update)", "request"
         end
 
         name = ask("What is the resource name? (PascalCase singular, e.g., Post):")
@@ -32,6 +33,8 @@ module Rhino
           generate_policy(name)
         when "scope"
           generate_scope(name)
+        when "request"
+          generate_request(name)
         end
       end
 
@@ -196,6 +199,50 @@ module Rhino
         say ""
         say "  Created: app/models/scopes/#{scope_name.underscore}.rb"
         say ""
+      end
+
+      # ----------------------------------------------------------------
+      # Request generation
+      # ----------------------------------------------------------------
+
+      # Generates {Model}StoreRequest / {Model}UpdateRequest into app/requests/,
+      # which Zeitwerk autoloads like every other app/* directory — no
+      # initializer and no eager_load_paths entry is needed for the naming
+      # convention to find them.
+      def generate_request(name)
+        model_name = name.sub(/(Store|Update)?Request\z/, "")
+        model_name = name if model_name.blank?
+
+        which = select("Which request classes should be generated?") do |menu|
+          menu.choice "Store (POST /{resource})", "store"
+          menu.choice "Update (PUT /{resource}/:id)", "update"
+          menu.choice "Both", "both"
+        end
+
+        actions = which == "both" ? %w[store update] : [which]
+        created = []
+
+        actions.each do |request_action|
+          class_name = request_class_name(model_name, request_action)
+          task("Generating #{class_name}") do
+            created << write_request_file(model_name, request_action)
+          end
+        end
+
+        say ""
+        say "#{created.length == 1 ? 'Request' : 'Requests'} generated successfully!", :green
+        say ""
+        created.each { |path| say "  Created: #{path}" }
+        say ""
+        say "  Next steps:", :yellow
+        say "    1. Declare an `attribute` for EVERY field the action may write —"
+        say "       an undeclared field is dropped, not persisted."
+        say "    2. Add validations, and override authorize?/prepare if needed."
+        say ""
+      end
+
+      def request_class_name(model_name, request_action)
+        "#{model_name}#{request_action == 'update' ? 'Update' : 'Store'}Request"
       end
 
       # ----------------------------------------------------------------
@@ -387,6 +434,23 @@ module Rhino
         )
 
         File.write(dest, content)
+      end
+
+      def write_request_file(name, request_action)
+        template = File.expand_path("../../templates/generate/request.rb.erb", __FILE__)
+        class_name = request_class_name(name, request_action)
+        relative = "app/requests/#{class_name.underscore}.rb"
+        dest = Rails.root.join(relative)
+        FileUtils.mkdir_p(File.dirname(dest))
+
+        content = ERB.new(File.read(template), trim_mode: "-").result_with_hash(
+          name: name,
+          class_name: class_name,
+          action: request_action
+        )
+
+        File.write(dest, content)
+        relative
       end
 
       def register_model_in_config(name)
